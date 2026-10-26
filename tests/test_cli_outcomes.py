@@ -4,11 +4,27 @@ import json
 import os
 import subprocess
 import sys
+import pytest
 from pathlib import Path
 
 import hermes_curator_evolver
 from hermes_curator_evolver.__main__ import build_parser
 from hermes_curator_evolver.cli import handle_cli
+
+
+@pytest.mark.parametrize("command", ["bootstrap", "backfill-sessions"])
+@pytest.mark.parametrize("failure", [None, "sessions_failed", "source_failures", "pagination_truncated", "partial"])
+def test_partial_backfill_exit_retains_imported_counts(monkeypatch, capsys, command, failure):
+    payload = {"tool_events_imported": 2, "sessions_imported": 1}
+    if failure is not None:
+        payload[failure] = 1
+    monkeypatch.setattr("hermes_curator_evolver.cli.backfill_sessions", lambda **kwargs: payload)
+    monkeypatch.setattr("hermes_curator_evolver.cli._run_bootstrap", lambda values: {"backfill": payload, "auto_timer": {"enabled": True}})
+    result = handle_cli(_args(command, "--format", "json"))
+    body = _json_stdout(capsys)
+    assert (result != 0) is (failure is not None)
+    backfill = body["backfill"] if command == "bootstrap" else body
+    assert backfill["tool_events_imported"] == 2
 
 
 class FakeCtx:
@@ -45,7 +61,7 @@ def test_native_registered_handler_propagates_nonzero_integer(monkeypatch):
     assert len(ctx.cli_commands) == 1
     _, setup_fn, handler = ctx.cli_commands[0]
     assert setup_fn is not None
-    monkeypatch.setattr("hermes_curator_evolver.cli._dispatch_cli", lambda args: 23)
+    monkeypatch.setattr("hermes_curator_evolver.cli._dispatch_cli", lambda args, **kwargs: 23)
 
     result = handler(_args("verify", "--proposal-file", "unused.json"))
 

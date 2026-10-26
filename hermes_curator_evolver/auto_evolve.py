@@ -303,22 +303,10 @@ def protected_core_auto_apply_patterns() -> tuple[str, ...]:
 
 
 def discover_skill_files(skills_dir: str | Path) -> dict[str, Path]:
-    """Return top-level skill names mapped to their SKILL.md files."""
-
-    root = Path(skills_dir)
-    if not root.exists():
-        return {}
-    discovered: dict[str, Path] = {}
-    for skill_file in sorted(root.rglob("SKILL.md")):
-        if any(part in {".archive", ".curator_backups", ".hub"} for part in skill_file.parts):
-            continue
-        try:
-            text = skill_file.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-        name = _skill_name_from_text(text, skill_file.parent.name)
-        discovered[name] = skill_file
-    return discovered
+    """Return review identities without dropping distinct physical packages."""
+    from .skill_catalog import read_skill_catalog, review_rows
+    return {row["skill_name"]: Path(row["path"])
+            for row in review_rows(read_skill_catalog(skills_dir))}
 
 
 def _format_evidence_rows(evidence_rows: list[dict[str, Any]], *, limit: int = 5) -> list[str]:
@@ -728,17 +716,39 @@ def _select_candidate_skill_names(
     rerank_candidates: bool,
     embedding_backend: Any | None,
     reranker_backend: Any | None,
+    catalog: dict[str, Any] | None = None,
 ) -> tuple[list[str], dict[str, dict[str, Any]], dict[str, Any]]:
+    from .skill_catalog import read_skill_catalog, review_rows
+    catalog = read_skill_catalog(skills_dir) if catalog is None else catalog
     eligible_rows = _eligible_skill_rows(report, min_evidence=min_evidence)
+    normalized: dict[str, dict[str, Any]] = {}
+    for row in eligible_rows:
+        raw = str(row["skill_name"])
+        matches = [e for e in catalog["entries"] if raw == e.get("load_name")]
+        if not matches:
+            matches = [e for e in catalog["entries"] if raw in
+                       {e["name"], e["relative_path"], Path(e["path"]).parent.name, e["skill_name"]}]
+        name = matches[0]["skill_name"] if len(matches) == 1 else raw
+        selected = dict(row, skill_name=name, evidence_skill_name=raw)
+        # Aliases may describe overlapping invocations: never sum unproved counts.
+        if name not in normalized or int(row["event_count"]) > int(normalized[name]["event_count"]):
+            normalized[name] = selected
+    eligible_rows = list(normalized.values())
     eligible_names = [str(row["skill_name"]) for row in eligible_rows]
     eligible_set = set(eligible_names)
     metadata = _deterministic_selection_metadata(eligible_rows)
+    for row in eligible_rows:
+        metadata[str(row["skill_name"])]["evidence_skill_name"] = row["evidence_skill_name"]
     selection: dict[str, Any] = {
         "mode": "deterministic-evidence",
         "semantic_requested": bool(semantic_candidates or rerank_candidates),
         "rerank_requested": bool(rerank_candidates),
         "eligible_skill_count": len(eligible_names),
         "models": {"embedding": "not-used", "reranker": "not-used"},
+        "evidence_aggregate_limit": 20,
+        "aggregate_may_be_truncated": len(report.get("summary", {}).get("skills", [])) >= 20,
+        "complete_inventory_ranking": False,
+        "evidence_alias_aggregation": "maximum per-alias count; conservative lower bound",
     }
 
     if not eligible_names:
@@ -747,12 +757,14 @@ def _select_candidate_skill_names(
     if not (semantic_candidates or rerank_candidates):
         return eligible_names[:max_skills], metadata, selection
 
-    skill_file_count = len(discover_skill_files(skills_dir))
+    ranking_catalog = dict(catalog, entries=[e for e in review_rows(catalog) if e["skill_name"] in eligible_set])
+    skill_file_count = len(ranking_catalog["entries"])
     if skill_file_count == 0:
         selection.update({"mode": "semantic-no-skill-files", "fallback": "deterministic-evidence"})
         return eligible_names[:max_skills], metadata, selection
 
-    query = _build_semantic_query(report, eligible_names=eligible_set)
+    query_report = dict(report, summary=dict(report.get("summary", {}), skills=eligible_rows))
+    query = _build_semantic_query(query_report, eligible_names=eligible_set)
     semantic_result = find_skill_candidates(
         query=query,
         skills_dir=skills_dir,
@@ -762,6 +774,7 @@ def _select_candidate_skill_names(
         reranker_backend=reranker_backend,
         load_models=embedding_backend is None,
         load_reranker=bool(rerank_candidates and reranker_backend is None),
+        catalog=ranking_catalog,
     )
     selection.update(
         {
@@ -770,6 +783,11 @@ def _select_candidate_skill_names(
             "model_executed": bool(semantic_result.get("model_executed")),
             "reranker_executed": bool(semantic_result.get("reranker_executed")),
             "query_preview": query[:500],
+            "stages": semantic_result.get("stages"),
+            "stage_details": semantic_result.get("stage_details"),
+            "counts": semantic_result.get("counts"),
+            "batches": semantic_result.get("batches"),
+            "fallback": semantic_result.get("fallback"),
         }
     )
     if semantic_result.get("error"):
@@ -786,6 +804,7 @@ def _select_candidate_skill_names(
             "score": float(item.get("score") or 0.0),
             "reasons": list(item.get("reasons") or []),
             "embedding_score": item.get("embedding_score"),
+            "evidence_skill_name": metadata.get(name, {}).get("evidence_skill_name", name),
         }
     for name in eligible_names:
         if name not in ranked_names:
@@ -798,9 +817,8 @@ def _select_candidate_skill_names(
 def run_auto_evolve(config: AutoEvolveConfig | None = None) -> dict[str, Any]:
     """Run one automatic skill evolution pass.
 
-    By default this is a dry-run. Actual writes require both `apply_low_risk` and
-    `approve_auto_apply`; even then, writes are bounded managed-block updates
-    with optional reference spillover, and they go through guarded apply.
+    Plans are review-only until a native single-writer handoff is defined.
+    Legacy apply/approval flags remain accepted but do not grant that handoff.
     """
 
     cfg = config or AutoEvolveConfig()
@@ -811,7 +829,10 @@ def run_auto_evolve(config: AutoEvolveConfig | None = None) -> dict[str, Any]:
     backup_dir = Path(cfg.backup_dir) if cfg.backup_dir is not None else _default_backup_dir()
     store = EvidenceStore(cfg.db_path, read_only=True)
     report = build_report(store, days=days)
-    skill_files = discover_skill_files(skills_dir)
+    from .skill_catalog import read_skill_catalog, review_rows
+    catalog = read_skill_catalog(skills_dir)
+    catalog_by_name = {row["skill_name"]: row for row in catalog["entries"]}
+    skill_files = {name: Path(row["path"]) for name, row in catalog_by_name.items()}
     source_context = build_skill_source_context(skills_dir)
     hermes_config_path = (
         Path(cfg.hermes_config_path) if cfg.hermes_config_path is not None else _default_hermes_config_path()
@@ -826,6 +847,7 @@ def run_auto_evolve(config: AutoEvolveConfig | None = None) -> dict[str, Any]:
         rerank_candidates=bool(cfg.rerank_candidates),
         embedding_backend=cfg.embedding_backend,
         reranker_backend=cfg.reranker_backend,
+        catalog=catalog,
     )
     mode = "apply-low-risk" if cfg.apply_low_risk else "dry-run"
     candidates: list[dict[str, Any]] = []
@@ -865,6 +887,7 @@ def run_auto_evolve(config: AutoEvolveConfig | None = None) -> dict[str, Any]:
             "target_path": str(skill_file) if skill_file else None,
             "source": source_info.source if source_info else "missing",
             "source_writable": bool(source_info.writable) if source_info else False,
+            "catalog": {k: v for k, v in catalog_by_name.get(name, {}).items() if k != "text"},
             "channel_bound": _skill_is_channel_bound(name, channel_bound_skills),
             "auto_loaded_skill_max_chars": _bounded(
                 cfg.auto_loaded_skill_max_chars,
@@ -877,16 +900,28 @@ def run_auto_evolve(config: AutoEvolveConfig | None = None) -> dict[str, Any]:
             candidate["reason"] = "skill-file-not-found"
             candidates.append(candidate)
             continue
-        original = skill_file.read_text(encoding="utf-8")
+        identity = catalog_by_name[name]
+        if identity["read_status"] != "ok":
+            candidate["status"] = "skipped"
+            candidate["reason"] = ("skill-content-hard-cap" if identity["read_status"] == "oversized"
+                                   else "skill-file-unreadable")
+            candidates.append(candidate)
+            continue
+        if identity["visible"] is False or identity["disabled"] is True or identity["status"] == "shadowed":
+            candidate["status"], candidate["reason"] = "skipped", "catalog-target-not-review-eligible"
+            candidates.append(candidate)
+            continue
+        with skill_file.open(encoding="utf-8") as stream:
+            original = stream.read(_MAX_SKILL_CONTENT_CHARS + 1)
         if _skill_is_pinned(original):
             candidate["status"] = "skipped"
             candidate["reason"] = "pinned-skill"
             candidates.append(candidate)
             continue
         if cfg.apply_low_risk and cfg.approve_auto_apply:
-            if source_info and source_info.source != SOURCE_LOCAL_AGENT_CREATED:
+            if source_info and source_info.source in {"bundled", "hub-installed", "external-dir"}:
                 candidate["status"] = "skipped"
-                candidate["reason"] = "source-not-agent-created"
+                candidate["reason"] = "native-source-protected"
                 candidates.append(candidate)
                 continue
             skip_reason = _auto_apply_skip_reason(
@@ -908,7 +943,7 @@ def run_auto_evolve(config: AutoEvolveConfig | None = None) -> dict[str, Any]:
                 }
                 candidates.append(candidate)
                 continue
-        skill_report = build_report(store, days=days, skill=name)
+        skill_report = build_report(store, days=days, skill=selection_metadata.get(name, {}).get("evidence_skill_name", name))
         skill_summary = skill_report.get("summary") or {}
         evidence_rows = skill_report.get("skill_evidence") or []
         variants_requested = _bounded(cfg.variants or 1, minimum=1, maximum=len(_VARIANT_SPECS))
@@ -999,6 +1034,12 @@ def run_auto_evolve(config: AutoEvolveConfig | None = None) -> dict[str, Any]:
                 candidate["restore_drill_gate"] = drill_gate
                 candidates.append(candidate)
                 continue
+            elif not source_info or not source_info.writable or not catalog["single_writer_handoff"]:
+                candidate["status"] = "proposal-only"
+                candidate["apply_result"] = {
+                    "applied": False,
+                    "reason": "native-single-writer-handoff-required",
+                }
             else:
                 provenance_payload = {
                     "skill_name": name,
@@ -1060,8 +1101,9 @@ def run_auto_evolve(config: AutoEvolveConfig | None = None) -> dict[str, Any]:
                 minimum=1_000,
                 maximum=_MAX_SKILL_CONTENT_CHARS,
             ),
-            "auto_apply_policy": "local-agent-created-skills-only",
-            "auto_apply_source_policy": "bundled/hub/external/plugin/unknown sources are skipped",
+            "auto_apply_policy": "proposal-only-native-single-writer-handoff-required",
+            "auto_apply_available": False,
+            "auto_apply_source_policy": "ownership and native management never imply writer permission",
             "protected_core_patterns": list(_DEFAULT_CORE_AUTO_APPLY_PROTECTED_PATTERNS),
             "auto_apply_allowlist": list(_normalize_patterns(cfg.auto_apply_allowlist)),
             "auto_apply_blocklist": list(_normalize_patterns(cfg.auto_apply_blocklist)),
@@ -1296,7 +1338,8 @@ def install_auto_timer(
         "semantic_candidates": bool(semantic_candidates or rerank_candidates),
         "rerank_candidates": bool(rerank_candidates),
         "protect_core_skills": bool(protect_core_skills),
-        "auto_apply_policy": "local-agent-created-skills-only" if apply_low_risk else "dry-run-only",
+        "auto_apply_policy": "proposal-only-native-single-writer-handoff-required" if apply_low_risk else "dry-run-only",
+        "auto_apply_available": False,
         "auto_apply_allowlist": list(_normalize_patterns(auto_apply_allowlist)),
         "auto_apply_blocklist": list(_normalize_patterns(auto_apply_blocklist)),
         "verify_command": effective_verify_command,

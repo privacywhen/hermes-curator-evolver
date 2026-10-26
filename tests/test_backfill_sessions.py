@@ -262,3 +262,25 @@ def test_backfill_sessions_explicit_legacy_dir_remains_supported(tmp_path):
     assert result["source_type"] == "legacy_json"
     assert result["source_path"] == str(sessions_dir)
     assert result["sessions_seen"] == 1
+
+
+def test_idless_calls_in_different_messages_have_distinct_identity(tmp_path):
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    payload = {
+        "session_id": "s",
+        "session_start": "2026-05-01T10:00:00Z",
+        "messages": [
+            {"role": "assistant", "id": "m1", "tool_calls": [{"function": {"name": "terminal", "arguments": "{}"}}]},
+            {"role": "assistant", "id": "m2", "tool_calls": [{"function": {"name": "terminal", "arguments": "{}"}}]},
+        ],
+    }
+    (sessions / "session_s.json").write_text(json.dumps(payload), encoding="utf-8")
+    store = EvidenceStore(tmp_path / "e.sqlite")
+
+    first = backfill_sessions(sessions_dir=sessions, store=store, days=365)
+    second = backfill_sessions(sessions_dir=sessions, store=store, days=365)
+
+    assert first["tool_events_imported"] == 2
+    assert second["tool_events_imported"] == 0
+    assert store.summary(days=365)["tool_events"] == 2

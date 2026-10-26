@@ -40,6 +40,10 @@ def _handle_slash_command(raw_args: str) -> str:
 
 def register(ctx) -> None:
     """Register tools, observer hooks, CLI command, slash command, and skill."""
+    # Bind context on every subparser, not only the parent native dispatcher.
+    def native_cli(args):
+        return handle_cli(args, context=ctx)
+
     ctx.register_tool(
         name="curator_evidence_report",
         toolset="curator-evolver",
@@ -54,8 +58,8 @@ def register(ctx) -> None:
     ctx.register_cli_command(
         name="curator-evolver",
         help="Evidence reports and guarded skill evolution workflows",
-        setup_fn=setup_cli,
-        handler_fn=handle_cli,
+        setup_fn=lambda parser: setup_cli(parser, handler_fn=native_cli),
+        handler_fn=native_cli,
         description="Analyze evidence, draft proposals, find candidates, and apply reviewed changes with guardrails.",
     )
     ctx.register_command(

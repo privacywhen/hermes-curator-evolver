@@ -105,12 +105,54 @@ Age is not approval to purge. Evidence, journals, backups, manifests, and suppor
 files may be interdependent; legacy backups can retain raw credentials indefinitely.
 Reverting code must not restore a raw-data snapshot as a privacy rollback.
 
+## Event provenance and partial results
+
+Available native tool-call/turn/request identifiers and status are operational
+metadata, not consent to retain prose or proof of later usefulness. Ordinary short
+identifiers remain available; recognized-sensitive, oversized (over 128 characters),
+and reserved digest-marker identifiers use full-input SHA-256 fingerprints rather
+than shared redaction or truncated prefixes for identity. Internal turn replay keys
+also separate event, turn, message and positional namespaces. Readers minimize
+pre-existing identifier values without rewriting the database. Fingerprints preserve
+correlation, not anonymity or reversibility; unknown secret formats can still escape
+best-effort detection. Live turns without supplied identity cannot be reliably
+matched to historical positional turns; no text-based identity is invented.
+
+Missing or unknown outcome provenance stays unknown; a stored non-error flag alone does not
+prove success. Batch actions remain distinct from parent invocations and cannot
+be positively successful after contradictory/rolled-back results.
+
+Import failures expose exception classes rather than private exception messages.
+Source failures, failed sessions and failed event writes are separate counters;
+partial success retains earlier imported counts and produces a nonzero CLI result.
+Legacy records lacking native identifiers are not retrospectively assigned native
+provenance, and identity/replay guarantees depend on the identifiers actually
+available. No evidence is automatically deleted or rewritten to resolve ambiguity.
+
 ## Remaining execution boundaries
 
-Sanitizing a prompt is not a sandbox or consent to transmit it. The existing
-optional `hermes chat` drafting subprocess remains prompt-constrained, not hard
-no-tool constrained; fixing that mechanism and explicit provider-egress consent
-belongs to P03. Do not use real evidence drafting pending that gate. Semantic
+Sanitizing a prompt is not consent to transmit it. Optional drafting now binds the
+supported host-owned `ctx.llm.complete` interface; there is no nested chat process,
+agent tool loop, inherited conversation, provider override, or subprocess fallback.
+The default is deterministic with zero model calls (the host API is not even
+resolved without consent). Native `hermes curator-evolver propose --draft-with-model`
+explicitly consents to transmitting bounded sanitized skill identity/text, counts,
+and evidence rows to the host active route and configured fallback. Payload classes
+and routing policy are printed to stderr **before** the call and recorded in output;
+the exact destination is host-resolved at call time. CLI proposal evidence remains
+metadata-only; local legacy-preview read consent never enables drafting.
+
+The user payload is capped at 12,000 characters plus a fixed system instruction;
+skill text contributes at most 4,000 characters. Host output is requested at 1,024
+tokens and timeout 1–300 seconds (default 180). Non-string, empty, or over-16,000-
+character replies fail closed; displayed sanitized draft text is capped at 4,000.
+Requested/attempted/response-received/completed stages and returned provider/model
+are recorded; exception detail is omitted because it can echo private evidence.
+Tool-call-shaped text is inert draft data. Structural verification/human approval
+remain separate; no model semantic verification or apply permission is implied.
+An absent/older host API or standalone model request returns nonzero with its
+deterministic proposal intact. Standalone deterministic proposals remain available.
+These boundaries are covered by fake callers, not live-provider acceptance. Semantic
 model downloads/execution, LLWM compatibility, installed activation, native hook
 delivery, scheduler wiring, and live skill changes need separate runtime evidence
 and authorization. Synthetic tests and resolver dry runs do not prove those gates.

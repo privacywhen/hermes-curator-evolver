@@ -30,6 +30,24 @@
 
 ---
 
+## Native lifecycle boundary in this checkout
+
+**`auto-run` is proposal-only until an explicit native single-writer handoff exists.**
+Legacy `--apply-low-risk --approve-auto-apply` flags and allowlists do not establish
+that handoff: plans remain review-only, no skill/reference writes occur, and an
+attempted apply is reported as refused. Manual guarded `apply` is a separate,
+explicitly approved operation—not a grant of unattended native lifecycle authority.
+
+The shared read-only catalog uses supported, already-loaded or injected native
+resolver functions over explicit roots. It preserves duplicate/shadowed packages;
+standalone audits remain explicitly physical, not canonical active inventory.
+Management/adoption markers are **not authorship**. Missing/invalid policy state
+stays unknown. Unknown-disabled entries may appear in physical review output;
+this is not a claim that the native loader enables them. Strict inspection does not import plugins, scan trusted projects,
+or probe application/environment availability; unavailable scopes/gates are
+reported rather than treated as enabled. Older feature/history descriptions below
+do not override this current lifecycle boundary.
+
 ## Current capabilities: variants + session mining
 
 **Privacy and inspection defaults:** new evidence is metadata-only unless sanitized
@@ -305,7 +323,7 @@ hermes-curator-evolver analyze --skill hermes-agent --days 30
 
 # Proposal + verifier
 hermes-curator-evolver propose --skill hermes-agent --skill-file ./SKILL.md --format json --output proposal.json
-hermes-curator-evolver propose --skill hermes-agent --skill-file ./SKILL.md --draft-with-model --model-timeout 180
+hermes curator-evolver propose --skill hermes-agent --skill-file ./SKILL.md --draft-with-model --model-timeout 180
 hermes-curator-evolver verify --proposal-file proposal.json --skill hermes-agent --format json
 
 # Candidate generation

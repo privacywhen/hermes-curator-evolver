@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .storage import EvidenceStore
+from .storage import EvidenceStore, replay_key
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +36,12 @@ def on_post_tool_call(
             task_id=task_id,
             session_id=session_id or str(kwargs.get("session_id") or ""),
             duration_ms=duration_ms,
+            tool_call_id=kwargs.get("tool_call_id"),
+            turn_id=kwargs.get("turn_id"),
+            api_request_id=kwargs.get("api_request_id"),
+            status=kwargs.get("status"),
+            error_type=kwargs.get("error_type"),
+            atomic_dedupe=bool(kwargs.get("tool_call_id") and (session_id or kwargs.get("session_id"))),
         )
     except (OSError, ValueError, TypeError) as exc:
         logger.warning("curator-evolver post_tool_call skipped: %s", type(exc).__name__)
@@ -59,6 +65,12 @@ def on_post_llm_call(
             assistant_response=assistant_response or "",
             model=model or "",
             platform=platform or "",
+            event_id=(
+                replay_key("event", kwargs["event_id"]) if kwargs.get("event_id") else
+                replay_key("turn", kwargs["turn_id"]) if kwargs.get("turn_id") else ""
+            ),
+            atomic_dedupe=bool((session_id or kwargs.get("session_id")) and
+                               (kwargs.get("event_id") or kwargs.get("turn_id"))),
         )
     except (OSError, ValueError, TypeError) as exc:
         logger.warning("curator-evolver post_llm_call skipped: %s", type(exc).__name__)

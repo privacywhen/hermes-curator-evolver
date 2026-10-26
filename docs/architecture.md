@@ -1,6 +1,6 @@
 # Hermes Curator Evolver Architecture
 
-`hermes-curator-evolver` is a plug-in evidence and auto-evolution layer around Hermes skills. It does **not** replace the official `hermes curator`; it observes what happened, summarizes why a skill may need improvement, drafts reviewable proposals, and can automatically apply low-risk bounded evidence notes through guardrails without modifying Hermes core.
+`hermes-curator-evolver` is an evidence and proposal layer around Hermes skills. It does **not** replace native `hermes curator`. Autorun prepares review plans only: no native single-writer handoff is defined, so legacy apply/approval flags and allowlists cannot authorize unattended skill/reference writes. Explicit manual guarded apply remains a separate operation.
 
 ## One-page architecture
 
@@ -30,10 +30,10 @@ flowchart LR
     Proposal --> V
     V --> Human
     Human --> Apply
-    Auto --> Apply
+    Auto --> Proposal
 ```
 
-The safety rule is simple: everything before `Apply` is non-mutating; `Apply` requires explicit approval and creates a rollback manifest.
+Review/inspection does not mutate the inspected evidence or skills. Collection, ingestion and bootstrap are explicit writers to their own stores/scheduler files, not read-only inspection. Manual `Apply` requires explicit approval and creates a rollback manifest; it is not an unattended native lifecycle handoff.
 
 ## What each part does
 
@@ -42,13 +42,13 @@ The safety rule is simple: everything before `Apply` is non-mutating; `Apply` re
 | Hermes runtime | Produces session/tool/skill activity signals. |
 | `curator-evolver` plugin | Registers observer hooks, a report tool, a slash command, and CLI entry points. |
 | SQLite evidence store | Keeps compact local evidence under `~/.hermes/plugin-data/curator-evolver/evidence.sqlite`. |
-| Reports | Shows which skills/tools produced useful or problematic evidence. |
+| Reports | Shows bounded activity/error/action summaries; these are not usefulness measurements. |
 | Skill audit | Read-only structural scan for oversized `SKILL.md`, missing `references/`, very long inline lines, and executable support files. |
 | Merge check | Read-only source→umbrella consolidation guard that blocks merges which would drop executable capacity such as `scripts/` or `.py`/`.sh` support files. |
 | Candidate search | Finds likely related skills with lexical search by default; semantic models are opt-in only. |
 | Proposal | Produces dry-run review artifacts grounded in evidence. |
 | Bootstrap | One-command setup that backfills recent sessions and installs/enables the daily timer. |
-| Auto-run | Selects active evidence-backed skills with deterministic evidence thresholds by default. With `--semantic-candidates --rerank-candidates`, it can use embedding/rerank to reorder only evidence-eligible skills before preparing low-risk bounded managed notes. Bulky evidence can spill into `references/`; unattended writes are local-agent-created-only by provenance. |
+| Auto-run | Selects evidence-backed physical review targets, optionally orders eligible targets with embedding/rerank, and prepares bounded notes/reference plans. Native visibility/disabled state can be unknown; this is not a canonical active-loader inventory. No unattended skill/reference writes occur without an explicitly defined native writer handoff. |
 | Verifier | Blocks ungrounded, mutating, or destructive proposals. |
 | Guarded apply | Writes reviewed content only after approval/hash/backup/verify gates. |
 
@@ -113,10 +113,20 @@ Hard rules:
 - Guarded apply requires exact target SHA256 and `--approve`.
 - Guarded apply creates a backup and manifest before writing.
 - Failed validation restores the backup automatically.
-- Auto-run mutates only when both `--apply-low-risk` and `--approve-auto-apply` are provided.
-- Even then, auto-run writes only local agent-created skills. Bundled/official, hub-installed, plugin-provided, `skills.external_dirs`, pinned, and unknown sources are skipped before any name allowlist/blocklist is considered. `--allow-auto-apply-skill <pattern>` only relaxes the extra core-name guard inside that source boundary.
-- Auto-run preserves existing skill text and writes only a managed `curator-evolver:auto` block.
+- Auto-run remains proposal-only even with both legacy apply flags. Ownership, native adoption, allowlisting and a successful restore drill never supply the missing native writer handoff.
+- Bundled/Hub/external ownership is preserved; absent/corrupt policy state stays unknown. Native management opt-in is not authorship. Unknown-disabled entries may appear in physical review output, never as a claim of enabled/native-active status.
+- Auto-run prepares bounded managed-block/reference plans while preserving existing source bytes. A refused apply is nonzero at the CLI.
 - Optional restore-drill gate: every guarded apply now records provenance, an evidence-DB reference, any scheduler unit paths, and per-support-file snapshots into the manifest. `hermes-curator-evolver restore-drill --manifest <manifest>` replays that manifest into a clean temp directory (or an explicit empty `--target-dir`) and emits a machine-readable pass/fail JSON report. Pair with `auto-run --require-restore-drill` to refuse subsequent mutating apply when the last apply has no matching successful drill yet, or when the drill-state file is unreadable (default: warn only, never silent).
+
+## Bounded ranking and event accounting
+
+Ranking uses one read-only catalog snapshot for lexical/embedding/rerank paths and fallback. The adapter reuses supported already-loaded/injected native resolver functions over explicit roots, without plugin discovery or trusted-project quarantine scans. Strict app/environment gates and unavailable scopes remain unknown. Catalog/ranking source reads are bounded by the existing 100,000-character skill hard cap; structural auditing remains a separate physical measurement. Model inputs retain the 512-character default budget, including useful identity/description/body snippets rather than only leading YAML.
+
+Vector/score cardinality, dimensions, finite numbers and nonzero vectors are validated. Failed embeddings fall back to lexical order; failed reranking keeps embedding order. Load, attempted call, validated completion and failure are separate. Reported encode/predict calls and input/pair counts are interface observations; `embedding_batches` follows the requested batch size of one, not measured backend internals. Scores are uncalibrated rankings, not confidence or usefulness.
+
+Autorun discloses the evidence aggregate's top-20 cutoff and does not claim complete inventory ranking. Unambiguous aliases use a conservative maximum per-alias count instead of summing potentially overlapping invocations. Semantic ordering cannot promote an evidence-ineligible target.
+
+One tool invocation and its child skill actions are separate counts. Per-skill aggregates count a parent invocation once per associated skill, not once per repeated action. Native status is primary; unknown provenance stays unknown, and batch rollback/contradictions cannot produce positively successful actions. Partial imports preserve successful earlier writes. Event attempts reconcile as imported + duplicates + failed; source/session failures are separate, and imported/failed session counts can overlap after partial persistence. These are operational observations, not outcome-quality measurements.
 
 ## Current commands
 
@@ -126,7 +136,7 @@ hermes-curator-evolver bootstrap --semantic
 hermes-curator-evolver status
 hermes-curator-evolver report --days 7 --format json
 hermes-curator-evolver propose --skill hermes-agent --format json --output proposal.json
-hermes-curator-evolver propose --skill hermes-agent --skill-file ./SKILL.md --draft-with-model
+hermes curator-evolver propose --skill hermes-agent --skill-file ./SKILL.md --draft-with-model
 hermes-curator-evolver verify --proposal-file proposal.json --skill hermes-agent
 hermes-curator-evolver candidates --query "gateway restart" --skills-dir ~/.hermes/skills
 hermes-curator-evolver candidates --query "gateway restart" --skills-dir ~/.hermes/skills --execute-semantic --rerank --format json

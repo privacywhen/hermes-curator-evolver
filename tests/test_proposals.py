@@ -44,7 +44,7 @@ def test_format_proposal_markdown_includes_no_mutation_disclaimer(tmp_path):
     markdown = format_proposal_markdown(proposal)
 
     assert "# Curator Evolver Proposal" in markdown
-    assert "No files were changed" in markdown
+    assert "No skill-write permission" in markdown
     assert "empty-skill" in markdown
 
 
@@ -69,6 +69,7 @@ def test_model_drafted_proposal_calls_injected_chat_backend_and_stays_dry_run(tm
         skill_name="hermes-agent",
         skill_text="# Hermes Agent",
         chat_backend=fake_chat_backend,
+        allow_evidence_egress=True,
     )
 
     assert "Skill: hermes-agent" in captured["prompt"]
@@ -90,11 +91,12 @@ def test_model_drafted_proposal_records_backend_errors_without_mutation(tmp_path
         skill_name="hermes-agent",
         skill_text="content",
         chat_backend=failing_backend,
+        allow_evidence_egress=True,
     )
 
     assert proposal["dry_run"] is True
     assert proposal["model_draft"]["executed"] is False
-    assert proposal["model_draft"]["error"] == "model unavailable"
+    assert proposal["model_draft"]["error"] == "RuntimeError"
 
 
 def test_verifier_accepts_grounded_dry_run_proposal(tmp_path):

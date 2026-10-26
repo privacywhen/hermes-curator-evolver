@@ -26,5 +26,5 @@ def test_digit_free_labeled_session_credential_never_reaches_sqlite(tmp_path):
     raw_bytes = db_path.read_bytes()
     assert b"password=hunter" not in raw_bytes
     assert b"hunter" not in raw_bytes
-    assert "[REDACTED:generic-token-assignment]" in stored[0]
+    assert stored[0].startswith('["sha256","') and stored[0].endswith('"]')
     assert "[REDACTED:generic-token-assignment]" in stored[1]
