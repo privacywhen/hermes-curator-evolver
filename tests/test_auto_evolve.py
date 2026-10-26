@@ -1,4 +1,5 @@
 import json
+import shlex
 import pytest
 from pathlib import Path
 
@@ -507,6 +508,7 @@ def test_install_auto_timer_can_opt_into_semantic_and_rerank_candidates(tmp_path
 def test_install_auto_timer_uses_launchd_on_macos(tmp_path, monkeypatch):
     monkeypatch.setattr(auto_evolve.sys, "platform", "darwin")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-profile"))
 
     result = install_auto_timer(
@@ -798,7 +800,9 @@ def test_install_auto_timer_enables_builtin_skill_verify_by_default(tmp_path, mo
     service_text = Path(result["service_path"]).read_text(encoding="utf-8")
     assert "--verify-command" in command
     assert "hermes_curator_evolver.skill_validate" in command
-    assert f"--verify-cwd {tmp_path / 'skills'}" in command
+    # Compare the argument value, not host-specific systemd quoting/backslashes.
+    argv = shlex.split(command)
+    assert argv[argv.index("--verify-cwd") + 1] == str(tmp_path / "skills")
     assert result["verify_command"].endswith(" -m hermes_curator_evolver.skill_validate")
     assert result["verify_cwd"] == str(tmp_path / "skills")
     assert "Environment=PYTHONUNBUFFERED=1" in service_text

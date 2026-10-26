@@ -142,7 +142,7 @@ def inspect_skill_structure(skill_file: str | Path) -> SkillStructure:
             if path.relative_to(skill_dir).parts
         }
     )
-    executable_paths = [str(path.relative_to(skill_dir)) for path in executable[:25]]
+    executable_paths = [path.relative_to(skill_dir).as_posix() for path in executable[:25]]
     name = _frontmatter_value(text, _NAME_RE, fallback=skill_dir.name)
     description = _frontmatter_value(text, _DESCRIPTION_RE)
 
