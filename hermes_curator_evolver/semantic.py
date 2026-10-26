@@ -7,6 +7,7 @@ import os
 import re
 from pathlib import Path
 from typing import Any
+from .hygiene import scrub
 
 _EMBEDDING_MODEL = "Qwen3-Embedding-0.6B"
 _EMBEDDING_MODEL_ID = "Qwen/Qwen3-Embedding-0.6B"
@@ -74,7 +75,7 @@ def _skill_name(path: Path, skills_dir: Path) -> str:
 def _read_skill_rows(skills_dir: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for path in _skill_files(skills_dir):
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = scrub(path.read_text(encoding="utf-8", errors="replace"))
         rows.append({"skill_name": _skill_name(path, skills_dir), "path": str(path), "text": text})
     return rows
 
@@ -245,9 +246,16 @@ def find_skill_candidates(
     model loading is explicitly requested.
     """
 
+    query = scrub(query)
     plan = semantic_model_plan()
     path = Path(skills_dir)
-    bounded_limit = max(1, int(limit or 10))
+    bounded_limit = int(limit) if limit is not None else 10
+    if bounded_limit < 0:
+        raise ValueError("candidate limit must be nonnegative")
+    if bounded_limit == 0:
+        return {"mode": "semantic-plan" if semantic else "lexical", "query": query,
+                "models": {"embedding": "not-used", "reranker": "not-used"},
+                "model_downloaded": False, "model_executed": False, "candidates": []}
     if semantic:
         if embedding_backend is None and load_models:
             try:

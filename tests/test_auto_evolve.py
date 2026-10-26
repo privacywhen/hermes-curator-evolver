@@ -1,4 +1,6 @@
 import json
+import shlex
+import pytest
 from pathlib import Path
 
 import hermes_curator_evolver.auto_evolve as auto_evolve
@@ -159,7 +161,8 @@ slack:
     assert sha256_file(skill_file) == original_hash
 
 
-def test_low_risk_update_preserves_existing_skill_and_appends_managed_block(tmp_path):
+@pytest.mark.parametrize("previews", [False, True])
+def test_low_risk_update_preserves_existing_skill_and_appends_managed_block(tmp_path, previews):
     skill_file = _write_skill(tmp_path, "hermes-agent")
     original = skill_file.read_text(encoding="utf-8")
     evidence = [
@@ -168,6 +171,7 @@ def test_low_risk_update_preserves_existing_skill_and_appends_managed_block(tmp_
             "tool_name": "terminal",
             "is_error": True,
             "result_preview": "exit_code 1: gateway restart failed",
+            "_previews_opt_in": previews,
         }
     ]
 
@@ -181,7 +185,7 @@ def test_low_risk_update_preserves_existing_skill_and_appends_managed_block(tmp_
 
     assert updated.startswith(original)
     assert "<!-- curator-evolver:auto:start -->" in updated
-    assert "gateway restart failed" in updated
+    assert ("gateway restart failed" in updated) is previews
     assert "Low-risk bounded auto-curation" in updated
 
 
@@ -256,7 +260,8 @@ def test_auto_evolve_apply_low_risk_updates_skill_with_backup(tmp_path):
     assert Path(result["candidates"][0]["apply_result"]["manifest_path"]).exists()
 
 
-def test_auto_evolve_spills_near_limit_evidence_to_reference_file(tmp_path):
+def test_auto_evolve_spills_near_limit_evidence_to_reference_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_CURATOR_EVOLVER_COLLECT_PREVIEWS", "1")
     db = tmp_path / "evidence.sqlite"
     store = EvidenceStore(db, preview_chars=6_000)
     skills = tmp_path / "skills"
@@ -292,7 +297,10 @@ def test_auto_evolve_spills_near_limit_evidence_to_reference_file(tmp_path):
     assert "Detailed evidence moved to" in updated
     assert long_preview not in updated
     assert references, "expected detailed evidence spillover reference file"
-    assert long_preview in references[0].read_text(encoding="utf-8")
+    reference_text = references[0].read_text(encoding="utf-8")
+    assert long_preview[:1000] not in reference_text  # Collection opt-in is not legacy publication consent.
+    assert "content_omitted" in reference_text
+    assert long_preview not in reference_text  # Explicit preview safety cap also applies to spillover.
 
 
 def test_auto_evolve_skips_apply_when_skill_already_exceeds_hard_cap(tmp_path):
@@ -500,6 +508,7 @@ def test_install_auto_timer_can_opt_into_semantic_and_rerank_candidates(tmp_path
 def test_install_auto_timer_uses_launchd_on_macos(tmp_path, monkeypatch):
     monkeypatch.setattr(auto_evolve.sys, "platform", "darwin")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-profile"))
 
     result = install_auto_timer(
@@ -791,7 +800,9 @@ def test_install_auto_timer_enables_builtin_skill_verify_by_default(tmp_path, mo
     service_text = Path(result["service_path"]).read_text(encoding="utf-8")
     assert "--verify-command" in command
     assert "hermes_curator_evolver.skill_validate" in command
-    assert f"--verify-cwd {tmp_path / 'skills'}" in command
+    # Compare the argument value, not host-specific systemd quoting/backslashes.
+    argv = shlex.split(command)
+    assert argv[argv.index("--verify-cwd") + 1] == str(tmp_path / "skills")
     assert result["verify_command"].endswith(" -m hermes_curator_evolver.skill_validate")
     assert result["verify_cwd"] == str(tmp_path / "skills")
     assert "Environment=PYTHONUNBUFFERED=1" in service_text
@@ -823,6 +834,7 @@ def test_auto_evolve_json_serializable(tmp_path):
     skills = tmp_path / "skills"
     _write_skill(skills, "empty-skill")
 
+    EvidenceStore(db)
     result = run_auto_evolve(AutoEvolveConfig(db_path=db, skills_dir=skills))
 
     json.dumps(result, ensure_ascii=False, sort_keys=True)

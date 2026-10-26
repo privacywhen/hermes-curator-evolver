@@ -143,8 +143,7 @@ def test_candidates_list_does_not_create_missing_queue_db(tmp_path):
         ]
     )
 
-    with pytest.raises(FileNotFoundError):
-        handle_cli(args)
+    assert handle_cli(args) == 1
 
     assert not db.exists()
     assert not db.parent.exists()

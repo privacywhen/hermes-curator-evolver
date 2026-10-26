@@ -31,8 +31,8 @@ def hermes_home() -> Path:
     return Path(get_hermes_home())
 
 
-def data_dir() -> Path:
-    """Return plugin data directory and create it if needed.
+def data_dir(*, create: bool = False) -> Path:
+    """Resolve plugin data, creating it only for an explicit writer call.
 
     State lives in ``<hermes home>/plugin-data/<plugin>/``, the location Hermes
     core reserves for plugin state. It must NOT live in ``<hermes home>/plugins/``:
@@ -48,14 +48,18 @@ def data_dir() -> Path:
     ``plugin_data_dir`` is the supported core API for this; fall back to the same
     path when Hermes is not importable (standalone CLI use).
     """
-    try:
-        from plugins.plugin_storage import plugin_data_dir
-    except ImportError:
+    if not create:
         path = hermes_home() / "plugin-data" / PLUGIN_NAME
     else:
-        path = plugin_data_dir(PLUGIN_NAME)
+        try:
+            from plugins.plugin_storage import plugin_data_dir
+        except ImportError:
+            path = hermes_home() / "plugin-data" / PLUGIN_NAME
+        else:
+            path = plugin_data_dir(PLUGIN_NAME)
     _check_legacy_state(path)
-    path.mkdir(parents=True, exist_ok=True)
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
     return path
 
 
@@ -91,19 +95,18 @@ def default_db_path() -> Path:
     """Return the configured SQLite database path."""
     override = os.getenv("HERMES_CURATOR_EVOLVER_DB")
     if override:
-        path = Path(override).expanduser()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        return path
-    return data_dir() / "evidence.sqlite"
+        return Path(override).expanduser()
+    return data_dir(create=False) / "evidence.sqlite"
 
 
-def default_backup_dir() -> Path:
+def default_backup_dir(*, create: bool = False) -> Path:
     """Return the default guarded-apply backup directory.
 
     Like the evidence database, backups must stay out of the install directory:
     ``--apply-low-risk`` runs write them, so hashing them into the dependency
     stamp has the same failure mode as the database.
     """
-    path = data_dir() / "backups"
-    path.mkdir(parents=True, exist_ok=True)
+    path = data_dir(create=create) / "backups"
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
     return path

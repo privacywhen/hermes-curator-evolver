@@ -327,12 +327,11 @@ def _check_evidence_refs(evidence: dict[str, Any] | None) -> dict[str, Any]:
         check["reason"] = "db-path-missing"
         return check
     try:
-        connection = sqlite3.connect(str(path))
-        try:
+        from .sqlite_read import open_read_snapshot
+
+        with open_read_snapshot(path) as connection:
             connection.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
-        finally:
-            connection.close()
-    except sqlite3.DatabaseError as exc:
+    except (sqlite3.DatabaseError, OSError, RuntimeError) as exc:
         check["status"] = "fail"
         check["reason"] = f"db-not-readable:{exc.__class__.__name__}"
         return check

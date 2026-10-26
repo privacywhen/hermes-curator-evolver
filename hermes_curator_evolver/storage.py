@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -11,6 +12,9 @@ from typing import Any
 _SQLITE_HEADER = b"SQLite format 3\x00"
 
 from .paths import default_db_path
+from .sqlite_read import ClosingConnection, open_read_snapshot
+from .privacy import clean_evidence_row, minimal_args, minimal_result
+from .hygiene import scrub_value
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS tool_events (
@@ -69,6 +73,7 @@ def cutoff_iso(days: int) -> str:
 
 
 def _compact(value: Any, limit: int) -> str:
+    value = scrub_value(value)
     if value is None:
         text = ""
     elif isinstance(value, str):
@@ -77,18 +82,21 @@ def _compact(value: Any, limit: int) -> str:
         try:
             text = json.dumps(value, ensure_ascii=False, sort_keys=True)
         except TypeError:
-            text = repr(value)
+            text = "[omitted: unsupported payload]"
     text = text.replace("\\x00", "")
+    if limit <= 0:
+        return ""
     if len(text) <= limit:
         return text
     return text[: max(limit - 1, 0)] + "…"
 
 
 def _json_dumps(value: Any, limit: int) -> str:
+    value = scrub_value(value)
     try:
         text = json.dumps(value or {}, ensure_ascii=False, sort_keys=True)
     except TypeError:
-        text = json.dumps({"repr": repr(value)}, ensure_ascii=False, sort_keys=True)
+        text = json.dumps({"content_omitted": True}, sort_keys=True)
     if len(text) <= limit:
         return text
     return json.dumps({"preview": text[: max(limit - 1, 0)] + "…"}, ensure_ascii=False)
@@ -129,18 +137,33 @@ def _extract_skill_name(tool_name: str, args: Any) -> str | None:
 class EvidenceStore:
     """Small SQLite repository for local curator evidence."""
 
-    def __init__(self, db_path: str | Path | None = None, preview_chars: int = 500):
+    def __init__(self, db_path: str | Path | None = None, preview_chars: int = 500, *, read_only: bool = False, collect_previews: bool | None = None, include_legacy_previews: bool = False):
         self.db_path = Path(db_path) if db_path is not None else default_db_path()
-        self.preview_chars = preview_chars
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.init_db()
+        self.preview_chars = max(0, min(int(preview_chars), 2000))
+        self.collect_previews = (os.getenv("HERMES_CURATOR_EVOLVER_COLLECT_PREVIEWS") == "1"
+                                 if collect_previews is None else bool(collect_previews))
+        self.read_only = read_only
+        # No collection-time provenance exists in old rows. Reading their content
+        # requires explicit per-reader consent, never a collection environment flag.
+        self.include_legacy_previews = bool(include_legacy_previews)
+        if read_only:
+            if not self.db_path.is_file():
+                raise FileNotFoundError(f"evidence store does not exist: {self.db_path}")
+        else:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            self.init_db()
 
     def connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        if self.read_only:
+            return open_read_snapshot(self.db_path)
+        else:
+            conn = sqlite3.connect(self.db_path, factory=ClosingConnection)
         conn.row_factory = sqlite3.Row
         return conn
 
     def init_db(self) -> None:
+        if self.read_only:
+            raise PermissionError("inspection cannot initialize evidence storage")
         try:
             with self.connect() as conn:
                 conn.executescript(_SCHEMA)
@@ -192,15 +215,15 @@ class EvidenceStore:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    created_at or utc_now(),
-                    session_id or "",
-                    task_id or "",
-                    tool_name or "",
+                    _compact(created_at or utc_now(), 64),
+                    _compact(session_id, 256),
+                    _compact(task_id, 256),
+                    _compact(tool_name, 256),
                     duration_ms,
                     1 if _looks_like_error(result) else 0,
-                    skill_name,
-                    _json_dumps(args, self.preview_chars * 2),
-                    _compact(result, self.preview_chars),
+                    _compact(skill_name, 256) if skill_name else None,
+                    _json_dumps(args if self.collect_previews else minimal_args(tool_name, args), self.preview_chars * 2),
+                    _compact(result if self.collect_previews else minimal_result(result), self.preview_chars),
                 ),
             )
 
@@ -210,6 +233,7 @@ class EvidenceStore:
         session_id: str,
         user_message: str,
         assistant_response: str,
+        event_id: str = "",
         model: str = "",
         platform: str = "",
         created_at: str | None = None,
@@ -223,14 +247,19 @@ class EvidenceStore:
                 ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    created_at or utc_now(),
-                    session_id or "",
-                    model or "",
-                    platform or "",
-                    _compact(user_message, self.preview_chars),
-                    _compact(assistant_response, self.preview_chars),
+                    _compact(created_at or utc_now(), 64),
+                    _compact(session_id, 256),
+                    _compact(model, 256),
+                    _compact(platform, 256),
+                    *self.turn_previews(user_message, assistant_response, event_id=event_id),
                 ),
             )
+
+    def turn_previews(self, user_message: str, assistant_response: str, *, event_id: str = "") -> tuple[str, str]:
+        """Use the same minimized representation for collection and replay checks."""
+        if not self.collect_previews:
+            return (json.dumps({"event_id": _compact(event_id, 128)}) if event_id else ""), ""
+        return _compact(user_message, self.preview_chars), _compact(assistant_response, self.preview_chars)
 
     def record_session_end(
         self,
@@ -250,12 +279,12 @@ class EvidenceStore:
                 ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    created_at or utc_now(),
-                    session_id or "",
+                    _compact(created_at or utc_now(), 64),
+                    _compact(session_id, 256),
                     1 if completed else 0,
                     1 if interrupted else 0,
-                    model or "",
-                    platform or "",
+                    _compact(model, 256),
+                    _compact(platform, 256),
                 ),
             )
 
@@ -339,7 +368,7 @@ class EvidenceStore:
                 """,
                 params,
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [clean_evidence_row(dict(row), include_previews=self.include_legacy_previews) for row in rows]
 
     def recent_turns(self, *, days: int, limit: int = 10) -> list[dict[str, Any]]:
         with self.connect() as conn:
@@ -353,4 +382,4 @@ class EvidenceStore:
                 """,
                 [cutoff_iso(days), limit],
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [clean_evidence_row(dict(row), include_previews=self.include_legacy_previews) for row in rows]

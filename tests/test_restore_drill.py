@@ -132,7 +132,7 @@ def test_run_restore_drill_passes_for_clean_manifest(tmp_path):
     )
     # Real SQLite DB so the evidence reference check passes.
     db_path = tmp_path / "evidence.sqlite"
-    sqlite3.connect(str(db_path)).close()
+    EvidenceStore(db_path)  # A real schema/header, not an uninitialized zero-byte file.
     # Real fake scheduler path so the scheduler reference check passes.
     (tmp_path / "fake.service").write_text("[Service]\n", encoding="utf-8")
     drill_target = tmp_path / "drill-root"
@@ -237,7 +237,7 @@ def test_run_restore_drill_warns_when_scheduler_paths_missing(tmp_path):
     apply_result = _apply_for_drill(tmp_path)
     # Provide an SQLite DB so evidence check passes; leave scheduler path missing.
     db_path = tmp_path / "evidence.sqlite"
-    sqlite3.connect(str(db_path)).close()
+    EvidenceStore(db_path)  # A real schema/header, not an uninitialized zero-byte file.
 
     report = run_restore_drill(apply_result["manifest_path"], target_dir=tmp_path / "drill")
 

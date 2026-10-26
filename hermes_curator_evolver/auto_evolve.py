@@ -42,6 +42,8 @@ from .skill_sources import (
     classify_skill_source,
 )
 from .storage import EvidenceStore
+from .hygiene import scrub
+from .privacy import clean_evidence_row, clean_report
 
 _START = "<!-- curator-evolver:auto:start -->"
 _END = "<!-- curator-evolver:auto:end -->"
@@ -322,6 +324,7 @@ def discover_skill_files(skills_dir: str | Path) -> dict[str, Path]:
 def _format_evidence_rows(evidence_rows: list[dict[str, Any]], *, limit: int = 5) -> list[str]:
     lines: list[str] = []
     for row in evidence_rows[:limit]:
+        row = clean_evidence_row(row)
         marker = "error" if row.get("is_error") else "ok"
         preview = str(row.get("result_preview") or "").replace("\n", " ").strip()
         if len(preview) > 220:
@@ -425,6 +428,7 @@ def _format_evidence_reference(
     if not evidence_rows:
         lines.append("- No individual evidence rows were available; aggregate counts triggered this pass.")
     for row in evidence_rows:
+        row = clean_evidence_row(row)
         created = row.get("created_at") or "unknown-time"
         tool = row.get("tool_name") or "unknown-tool"
         marker = "error" if row.get("is_error") else "ok"
@@ -679,6 +683,7 @@ def _eligible_skill_rows(report: dict[str, Any], *, min_evidence: int) -> list[d
 
 
 def _build_semantic_query(report: dict[str, Any], *, eligible_names: set[str], limit: int = 20) -> str:
+    report = clean_report(report)
     lines: list[str] = []
     for row in report.get("summary", {}).get("skills", []) or []:
         name = str(row.get("skill_name") or "")
@@ -804,7 +809,7 @@ def run_auto_evolve(config: AutoEvolveConfig | None = None) -> dict[str, Any]:
     min_evidence = _bounded(cfg.min_evidence, minimum=1, maximum=1000)
     skills_dir = Path(cfg.skills_dir) if cfg.skills_dir is not None else _default_skills_dir()
     backup_dir = Path(cfg.backup_dir) if cfg.backup_dir is not None else _default_backup_dir()
-    store = EvidenceStore(cfg.db_path)
+    store = EvidenceStore(cfg.db_path, read_only=True)
     report = build_report(store, days=days)
     skill_files = discover_skill_files(skills_dir)
     source_context = build_skill_source_context(skills_dir)

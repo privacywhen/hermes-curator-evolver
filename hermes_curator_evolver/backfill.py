@@ -117,6 +117,7 @@ def _turn_event_exists(
     platform: str,
     user_message: str,
     assistant_response: str,
+    event_id: str = "",
 ) -> bool:
     with store.connect() as conn:
         row = conn.execute(
@@ -127,11 +128,10 @@ def _turn_event_exists(
             LIMIT 1
             """,
             (
-                session_id,
-                model,
-                platform,
-                _compact(user_message, store.preview_chars),
-                _compact(assistant_response, store.preview_chars),
+                _compact(session_id, 256),
+                _compact(model, 256),
+                _compact(platform, 256),
+                *store.turn_previews(user_message, assistant_response, event_id=event_id),
             ),
         ).fetchone()
     return row is not None
@@ -259,12 +259,13 @@ def _import_session_data(
             result["tool_events_imported"] += 1
 
     pending_user: str | None = None
-    for message in messages:
+    for message_index, message in enumerate(messages):
         role = message.get("role")
         content = _content_text(message.get("content"))
         if role == "user" and content.strip():
             pending_user = content
         elif role == "assistant" and pending_user and content.strip():
+            event_id = str(message.get("id") or message.get("message_id") or f"message:{message_index}")
             if not _turn_event_exists(
                 evidence,
                 session_id=session_id,
@@ -272,11 +273,13 @@ def _import_session_data(
                 platform=platform,
                 user_message=pending_user,
                 assistant_response=content,
+                event_id=event_id,
             ):
                 evidence.record_turn(
                     session_id=session_id,
                     user_message=pending_user,
                     assistant_response=content,
+                    event_id=event_id,
                     model=model,
                     platform=platform,
                     created_at=_iso(_parse_dt(message.get("timestamp")) or session_dt),
@@ -334,6 +337,8 @@ def backfill_sessions(
 
     if sessions_dir is not None and state_db is not None:
         raise ValueError("sessions_dir and state_db are mutually exclusive")
+    if limit is not None and limit <= 0:
+        raise ValueError("backfill limit must be positive; use None for an unbounded import")
 
     evidence = store or EvidenceStore()
     bounded_days = max(int(days or 1), 1)

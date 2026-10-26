@@ -13,6 +13,9 @@ from pathlib import Path
 from typing import Any
 
 from .candidates import CANDIDATE_TYPES, Candidate
+from .sqlite_read import ClosingConnection, open_read_snapshot
+from .hygiene import scrub, scrub_value
+from .privacy import clean_candidate
 
 STATUS_PENDING = "pending"
 STATUS_ACCEPTED = "accepted"
@@ -47,22 +50,22 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
-    return {
+def _row_to_dict(row: sqlite3.Row, *, include_previews: bool = False) -> dict[str, Any]:
+    return clean_candidate({
         "id": row["id"],
         "candidate_type": row["candidate_type"],
-        "title": row["title"],
-        "rationale": row["rationale"],
+        "title": scrub(row["title"])[:500],
+        "rationale": scrub(row["rationale"])[:500],
         "confidence": float(row["confidence"]),
-        "evidence_refs": json.loads(row["evidence_refs_json"] or "[]"),
+        "evidence_refs": scrub_value(json.loads(row["evidence_refs_json"] or "[]"))[:100],
         "target_skill": row["target_skill"],
         "auto_apply_allowed": bool(row["auto_apply_allowed"]),
         "requires_human_review": bool(row["requires_human_review"]),
-        "metadata": json.loads(row["metadata_json"] or "{}"),
+        "metadata": {},  # Arbitrary legacy payloads are not review-list metadata.
         "status": row["status"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
-    }
+    }, include_previews=include_previews)
 
 
 class ReviewQueue:
@@ -73,8 +76,9 @@ class ReviewQueue:
     can be re-run safely.
     """
 
-    def __init__(self, db_path: Path | str, *, create: bool = True) -> None:
+    def __init__(self, db_path: Path | str, *, create: bool = True, include_legacy_previews: bool = False) -> None:
         self.db_path = Path(db_path)
+        self.include_legacy_previews = bool(include_legacy_previews)
         self._create = create
         if create:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -86,9 +90,9 @@ class ReviewQueue:
 
     def _connect(self) -> sqlite3.Connection:
         if self._create:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, factory=ClosingConnection)
         else:
-            conn = sqlite3.connect(f"file:{self.db_path.resolve().as_posix()}?mode=rw", uri=True)
+            return open_read_snapshot(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -104,6 +108,7 @@ class ReviewQueue:
         if not candidate.requires_human_review:
             raise ValueError("refusing to enqueue requires_human_review=False candidate")
         now = _utc_now()
+        safe = clean_candidate(vars(candidate))
         with self._connect() as conn:
             cur = conn.execute(
                 """
@@ -124,16 +129,16 @@ class ReviewQueue:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    candidate.id,
-                    candidate.candidate_type,
-                    candidate.title,
-                    candidate.rationale,
+                    safe["id"],
+                    safe["candidate_type"],
+                    safe["title"],
+                    safe["rationale"],
                     float(candidate.confidence),
-                    json.dumps(list(candidate.evidence_refs), ensure_ascii=False),
-                    candidate.target_skill,
+                    json.dumps(safe["evidence_refs"], ensure_ascii=False),
+                    safe["target_skill"],
                     int(bool(candidate.auto_apply_allowed)),
                     int(bool(candidate.requires_human_review)),
-                    json.dumps(candidate.metadata or {}, ensure_ascii=False, sort_keys=True),
+                    "{}",  # Metadata-only queue: do not persist arbitrary evidence payloads.
                     STATUS_PENDING,
                     now,
                     now,
@@ -147,7 +152,11 @@ class ReviewQueue:
         *,
         status: str | None = None,
         candidate_type: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
+        if not 0 <= limit <= 101 or offset < 0:
+            raise ValueError("queue limit must be 0..101 and offset nonnegative")
         clauses: list[str] = []
         params: list[Any] = []
         if status is not None:
@@ -165,10 +174,19 @@ class ReviewQueue:
         sql = "SELECT * FROM review_candidates"
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
-        sql += " ORDER BY created_at ASC, id ASC"
+        sql += " ORDER BY created_at ASC, id ASC LIMIT ? OFFSET ?"
         with self._connect() as conn:
-            rows = conn.execute(sql, params).fetchall()
-        return [_row_to_dict(r) for r in rows]
+            rows = conn.execute(sql, [*params, limit, offset]).fetchall()
+        return [_row_to_dict(r, include_previews=self.include_legacy_previews) for r in rows]
+
+    def list_page(self, *, limit: int = 100, offset: int = 0,
+                  status: str | None = None, candidate_type: str | None = None) -> dict[str, Any]:
+        if not 0 <= limit <= 100:
+            raise ValueError("queue page limit must be 0..100")
+        rows = self.list_candidates(status=status, candidate_type=candidate_type, limit=limit + 1, offset=offset)
+        page = rows[:limit]
+        return {"candidates": page, "pagination": {"limit": limit, "offset": offset,
+                "returned": len(page), "has_more": len(rows) > limit}}
 
     def update_status(self, candidate_id: str, new_status: str) -> bool:
         if new_status not in VALID_STATUSES:

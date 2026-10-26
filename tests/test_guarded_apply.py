@@ -1,5 +1,9 @@
 import json
+import os
+import shlex
+import subprocess
 import sys
+import pytest
 from pathlib import Path
 
 from hermes_curator_evolver.guarded_apply import (
@@ -7,6 +11,16 @@ from hermes_curator_evolver.guarded_apply import (
     rollback_guarded_patch,
     sha256_file,
 )
+
+
+def _python_command(*arguments: str | Path) -> str:
+    argv = [sys.executable, *(str(argument) for argument in arguments)]
+    return subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+
+
+def _marker_command(path: Path, text: str = "ran") -> str:
+    # Pass filenames as data, never interpolate Windows paths into Python code.
+    return _python_command("-c", "from pathlib import Path; import sys; Path(sys.argv[1]).write_text(sys.argv[2], encoding='utf-8')", path, text)
 
 
 def test_guarded_apply_requires_explicit_approval(tmp_path):
@@ -135,10 +149,11 @@ def test_rollback_refuses_to_clobber_post_apply_changes_without_force(tmp_path):
     assert target.read_text(encoding="utf-8") == "old"
 
 
-def test_staged_verify_runs_cheap_stage_then_expensive_when_cheap_passes(tmp_path):
+@pytest.mark.parametrize("marker_name", ["expensive-ran.txt", "marker with 'quote'.txt"])
+def test_staged_verify_runs_cheap_stage_then_expensive_when_cheap_passes(tmp_path, marker_name):
     target = tmp_path / "SKILL.md"
     target.write_text("old", encoding="utf-8")
-    marker = tmp_path / "expensive-ran.txt"
+    marker = tmp_path / marker_name
 
     result = apply_guarded_patch(
         target_path=target,
@@ -146,7 +161,7 @@ def test_staged_verify_runs_cheap_stage_then_expensive_when_cheap_passes(tmp_pat
         expected_sha256=sha256_file(target),
         approved=True,
         backup_root=tmp_path / "backups",
-        verify_command=f"{sys.executable} -c \"open('{marker}', 'w').write('ran')\"",
+        verify_command=_marker_command(marker),
         verify_cwd=tmp_path,
         staged_verify=True,
     )
@@ -172,7 +187,7 @@ def test_staged_verify_skips_expensive_stage_when_cheap_stage_fails(tmp_path):
         expected_sha256=sha256_file(target),
         approved=True,
         backup_root=tmp_path / "backups",
-        verify_command=f"{sys.executable} -c \"open('{marker}', 'w').write('ran')\"",
+        verify_command=_marker_command(marker),
         verify_cwd=tmp_path,
         staged_verify=True,
     )
@@ -226,8 +241,8 @@ def test_staged_verify_runs_pre_verify_command_before_expensive(tmp_path):
         expected_sha256=sha256_file(target),
         approved=True,
         backup_root=tmp_path / "backups",
-        pre_verify_command=f"{sys.executable} -c \"open('{pre_marker}','w').write('p')\"",
-        verify_command=f"{sys.executable} -c \"open('{expensive_marker}','w').write('e')\"",
+        pre_verify_command=_marker_command(pre_marker, "p"),
+        verify_command=_marker_command(expensive_marker, "e"),
         verify_cwd=tmp_path,
     )
 
@@ -249,7 +264,7 @@ def test_staged_verify_pre_command_failure_skips_expensive_stage(tmp_path):
         approved=True,
         backup_root=tmp_path / "backups",
         pre_verify_command="exit 3",
-        verify_command=f"{sys.executable} -c \"open('{expensive_marker}','w').write('e')\"",
+        verify_command=_marker_command(expensive_marker, "e"),
         verify_cwd=tmp_path,
     )
 
@@ -303,7 +318,7 @@ def test_guarded_apply_exposes_target_context_to_verify_command(tmp_path):
         expected_sha256=sha256_file(target),
         approved=True,
         backup_root=tmp_path / "backups",
-        verify_command=f"{sys.executable} {verifier}",
+        verify_command=_python_command(verifier),
         verify_cwd=tmp_path,
     )
 
@@ -326,7 +341,7 @@ def test_staged_verify_rolls_back_invalid_yaml_frontmatter(tmp_path):
         expected_sha256=sha256_file(target),
         approved=True,
         backup_root=tmp_path / "backups",
-        verify_command=f"{sys.executable} -c \"open('{marker}', 'w').write('ran')\"",
+        verify_command=_marker_command(marker),
         verify_cwd=tmp_path,
         staged_verify=True,
     )

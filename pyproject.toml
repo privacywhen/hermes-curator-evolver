@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "hermes-curator-evolver"
 version = "0.10.0"
-description = "Plug-and-play evidence-driven skill evolution for Hermes Agent with one-command bootstrap, provenance-safe autorun, historical session backfill, optional semantic/rerank ordering, and guarded apply."
+description = "Evidence-driven skill evolution for Hermes Agent with reviewable proposals, provenance-aware autorun, historical session backfill, optional semantic/rerank ordering, and guarded apply."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -30,14 +30,14 @@ classifiers = [
 dependencies = ["PyYAML>=6"]
 
 [project.urls]
-Homepage = "https://github.com/pingchesu/hermes-curator-evolver"
-Repository = "https://github.com/pingchesu/hermes-curator-evolver"
-Issues = "https://github.com/pingchesu/hermes-curator-evolver/issues"
-Documentation = "https://github.com/pingchesu/hermes-curator-evolver/tree/main/docs"
+Homepage = "https://github.com/privacywhen/hermes-curator-evolver"
+Repository = "https://github.com/privacywhen/hermes-curator-evolver"
+Issues = "https://github.com/privacywhen/hermes-curator-evolver/issues"
+Documentation = "https://github.com/privacywhen/hermes-curator-evolver/tree/main/docs"
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
-semantic = ["sentence-transformers>=3"]
+semantic = ["sentence-transformers>=3; sys_platform == 'win32' or sys_platform == 'linux' or sys_platform == 'darwin'"]
 
 [project.scripts]
 hermes-curator-evolver = "hermes_curator_evolver.__main__:main"

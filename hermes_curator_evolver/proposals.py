@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import subprocess
 from typing import Any, Callable
+from .hygiene import scrub, scrub_value
+from .privacy import clean_report
 
 
 def _summary(report: dict[str, Any]) -> dict[str, int]:
@@ -65,6 +67,8 @@ def build_skill_proposal(
     writes skill files by itself.
     """
 
+    report = clean_report(report)
+    skill_name, skill_text = scrub(skill_name), scrub(skill_text)
     evidence_summary = _summary(report)
     evidence_rows = report.get("skill_evidence") or []
     grounding_event_count = len(evidence_rows)
@@ -92,10 +96,12 @@ def build_skill_proposal(
 def hermes_chat_backend(prompt: str, *, timeout_seconds: int = 180) -> str:
     """Draft through the current Hermes CLI/model configuration.
 
-    This uses Hermes as a read-only drafting subprocess. The prompt explicitly
-    asks for proposal text only; applying edits remains a separate guarded step.
+    The prompt requests proposal text only, but this subprocess is NOT a hard
+    read-only/no-tool sandbox. Do not use real evidence pending P03's execution
+    and explicit evidence-egress consent gates.
     """
 
+    prompt = scrub(prompt)
     completed = subprocess.run(
         ["hermes", "chat", "-Q", "-q", prompt],
         check=False,
@@ -133,13 +139,13 @@ def build_model_drafted_proposal(
         proposal["model_draft"] = {
             "executed": False,
             "text": "",
-            "error": str(exc),
+            "error": scrub(str(exc)),
         }
     else:
         proposal["model_draft"] = {
             "executed": True,
-            "text": draft,
-            "policy": "Draft text only; no files were changed.",
+            "text": scrub(draft),
+            "policy": "Draft text is not apply permission; the external backend is not sandboxed by this builder.",
         }
     proposal["dry_run"] = True
     proposal["mutation_allowed"] = False
@@ -166,12 +172,14 @@ def _draft_prompt(
 
 
 def format_proposal_markdown(proposal: dict[str, Any]) -> str:
+    proposal = scrub_value(proposal)
     lines = [
         "# Curator Evolver Proposal",
         "",
         f"- Skill: `{proposal.get('skill_name', '')}`",
         "- Mode: dry-run proposal",
-        "- Safety: No files were changed.",
+        ("- Safety: External drafting backend effects are not verified by this builder."
+         if "model_draft" in proposal else "- Safety: No files were changed."),
         f"- Grounding events: {proposal.get('grounding_event_count', 0)}",
         "",
         "## Proposed actions",
@@ -200,4 +208,4 @@ def format_proposal_markdown(proposal: dict[str, Any]) -> str:
 
 
 def format_proposal_json(proposal: dict[str, Any]) -> str:
-    return json.dumps(proposal, ensure_ascii=False, indent=2, sort_keys=True)
+    return json.dumps(scrub_value(proposal), ensure_ascii=False, indent=2, sort_keys=True)

@@ -45,6 +45,8 @@ def test_register_wires_tool_hooks_cli_slash_and_skill():
 
 def test_tool_handler_returns_json_string(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_CURATOR_EVOLVER_DB", str(tmp_path / "evidence.sqlite"))
+    from hermes_curator_evolver.storage import EvidenceStore
+    EvidenceStore()  # Inspection requires an existing store; it must not create one.
     ctx = FakeCtx()
     hermes_curator_evolver.register(ctx)
     handler = ctx.tools[0][3]
