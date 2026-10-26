@@ -1,28 +1,17 @@
-# After install: autorun, health checks, and supported models
+# After install: verification and state safety
 
-This page is the short operator guide for users who installed `hermes-curator-evolver` through the README quick start and want to know what happens next.
+This guide assumes the plugin was admitted through Hermes' normal plugin manager with its install scanner enabled. Review caution findings before accepting; a dangerous verdict blocks installation. Do not turn off scanning or edit Hermes' installed source tree to make admission pass.
 
-## What should be true after quick start
-
-The open-box quick start installs three things:
+A successful plugin install does not imply that bootstrap ran, that historical sessions were imported, that an evidence database is populated, or that a scheduler is active. Verify the installed plugin and CLI first:
 
 ```bash
-hermes plugins install pingchesu/hermes-curator-evolver --enable
-uv pip install --python ~/.hermes/hermes-agent/venv/bin/python -e ~/.hermes/plugins/curator-evolver
-hermes-curator-evolver bootstrap
+hermes plugins list
+hermes-curator-evolver status
 ```
 
-`bootstrap` combines the two noisy setup steps that used to be separate: it backfills recent sessions and installs/enables the daily user scheduler. Linux uses a systemd user timer; macOS uses a launchd LaunchAgent. Use `bootstrap --semantic` only when you explicitly want embedding + rerank candidate ordering.
+`bootstrap` is a consequential opt-in, not an automatic post-install check. It can import historical session data into local plugin state and install/enable recurring scheduled work. Before considering it, resolve the active profile's Hermes home, decide whether historical evidence should be read, review the scheduler/write behavior, and make sure any existing installation state is backed up. The procedure and first-run review are in [installation.md](installation.md).
 
-After that:
-
-| Component | Expected state |
-| --- | --- |
-| Plugin clone | `~/.hermes/plugins/curator-evolver` exists. |
-| CLI entrypoint | `hermes-curator-evolver` is available in the Hermes Python environment. |
-| Evidence DB | `~/.hermes/plugin-data/curator-evolver/evidence.sqlite` exists and includes recent backfilled session evidence. |
-| User scheduler | Linux: `hermes-curator-evolver-auto.timer` runs daily. macOS: `~/Library/LaunchAgents/com.pingchesu.hermes-curator-evolver.auto.plist` is loaded. |
-| Hermes core | Unmodified. The plugin is removable without patching Hermes Agent source code. |
+On Windows, Hermes' active home is normally under `%LOCALAPPDATA%\hermes`; active profiles may resolve elsewhere through `HERMES_HOME`. Use the Python environment managed by Hermes rather than installing dependencies into global Python. For normal updates use Hermes' plugin manager so its dependency lock, scanner, and selected environment remain in sync.
 
 ## Existing installations
 
@@ -201,12 +190,7 @@ The plugin is designed so the default autorun path does **not** require a model.
 
 Install optional semantic dependencies only if you want embedding/reranker candidate search:
 
-```bash
-uv pip install --python ~/.hermes/hermes-agent/venv/bin/python -e "$HOME/.hermes/plugins/curator-evolver[semantic]"
-# Optional runtime tuning:
-# HERMES_CURATOR_EVOLVER_SEMANTIC_DEVICE=cpu|cuda|auto
-# HERMES_CURATOR_EVOLVER_SEMANTIC_TEXT_LIMIT=512
-```
+The optional `semantic` extra is not selected by a base install. Do not add it with a direct `uv pip` operation against Hermes' managed environment; use the native package-management path supported by your Hermes version. If no supported extra-selection operation is available, keep semantic execution disabled. Optional model weights are separate downloads and are never part of admission.
 
 Then run semantic candidate search explicitly:
 
@@ -253,6 +237,4 @@ hermes plugins uninstall curator-evolver
 
 Remove local evidence/backups only if you want a clean slate:
 
-```bash
-rm -rf ~/.hermes/plugin-data/curator-evolver
-```
+Preserve evidence and backups by default. They should remain in place unless you have stopped all writers, resolved the active profile's exact Hermes home, verified an independent backup, and explicitly decided to discard that data.

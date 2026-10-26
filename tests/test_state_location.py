@@ -70,7 +70,7 @@ def test_writing_the_database_does_not_touch_the_install_dir(tmp_path, monkeypat
     store = EvidenceStore(paths.default_db_path())
     store.record_tool_call(tool_name="terminal", args={"cmd": "true"}, result="ok",
                            session_id="s1")
-    (paths.default_backup_dir() / "skill.md").write_text("backup")
+    (paths.default_backup_dir(create=True) / "skill.md").write_text("backup")
     logs = paths.data_dir() / "logs"
     logs.mkdir()
     (logs / "run.log").write_text("runtime log")
@@ -91,7 +91,7 @@ def test_env_override_still_wins(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_CURATOR_EVOLVER_DB", str(target))
     with patch.object(Path, "home", return_value=tmp_path):
         assert paths.default_db_path() == target
-    assert target.parent.is_dir()
+    assert not target.parent.exists()  # Resolution is not a writer operation.
 
 
 def test_falls_back_to_home_plugin_data_without_hermes_installed(tmp_path, monkeypatch):
@@ -148,7 +148,7 @@ def test_plugin_data_dir_api_is_used_when_available(tmp_path, monkeypatch):
     stub.plugin_storage = storage
 
     with patch.dict(sys.modules, {"plugins": stub, "plugins.plugin_storage": storage}):
-        resolved = paths.data_dir().resolve()
+        resolved = paths.data_dir(create=True).resolve()
 
     assert calls == ["curator-evolver"], calls
     assert resolved == expected.resolve()
@@ -238,7 +238,7 @@ def test_offline_directory_migration_preserves_real_evidence(tmp_path, monkeypat
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("HERMES_CURATOR_EVOLVER_DB", raising=False)
     legacy = tmp_path / "plugins" / "curator-evolver" / "data"
-    store = EvidenceStore(legacy / "evidence.sqlite")
+    store = EvidenceStore(legacy / "evidence.sqlite", collect_previews=True)
     store.record_tool_call(tool_name="terminal", args={}, result="before")
     # Model the documented offline step after every writer has closed its DB.
     target = tmp_path / "plugin-data" / "curator-evolver"
@@ -247,7 +247,7 @@ def test_offline_directory_migration_preserves_real_evidence(tmp_path, monkeypat
     legacy.symlink_to(target, target_is_directory=True)
     for _ in range(2):
         assert paths.data_dir() == target
-    migrated = EvidenceStore()
+    migrated = EvidenceStore(collect_previews=True)
     migrated.record_tool_call(tool_name="terminal", args={}, result="after")
     with sqlite3.connect(migrated.db_path) as conn:
         assert conn.execute("select result_preview from tool_events order by id").fetchall() == [

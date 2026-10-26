@@ -19,7 +19,7 @@
 [![Agents](https://img.shields.io/badge/Agents-skill%20governance-2563eb?style=flat-square)](https://github.com/pingchesu/hermes-curator-evolver)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![SQLite](https://img.shields.io/badge/SQLite-local%20evidence-003B57?style=flat-square&logo=sqlite&logoColor=white)](https://www.sqlite.org/)
-[![Safety](https://img.shields.io/badge/v0.10-bootstrap%20%2B%20safe%20autorun-22c55e?style=flat-square)](#safety-model)
+[![Safety](https://img.shields.io/badge/v0.10-reviewable%20maintenance-22c55e?style=flat-square)](#safety-model)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](./LICENSE)
 
 | 📚 Session evidence | 🧠 Memory/skill candidates | 🧪 `--variants` dry-run | 🛡️ Guarded automation |
@@ -30,9 +30,16 @@
 
 ---
 
-## Latest update: variants + session mining
+## Current capabilities: variants + session mining
 
-Two new reviewer-first paths are now visible up front:
+**Privacy and inspection defaults:** new evidence is metadata-only unless sanitized
+previews are explicitly enabled. Inspection never initializes/repairs a missing or
+damaged store and refuses live/journaled sources rather than creating SQLite
+sidecars. Read [privacy, strict inspection, CLI outcomes, and retention inventory](docs/privacy-and-inspection.md)
+before collecting content or using historical evidence. No automatic deletion or
+provider-egress permission is implied.
+
+Reviewer-first paths available in this checkout:
 
 - **`auto-run --variants N`** generates up to four deterministic, model-free bounded update variants, scores them with local safety/quality signals, and selects one winner. The default remains `--variants 1`, so existing dry runs stay stable.
 - **`candidates-mine` + `candidates-list`** turns already-redacted session evidence into a local SQLite review queue. It classifies findings as `memory`, `skill_update`, `skill_new`, `replay_benchmark`, or `ignore` so a human can decide what should become durable memory, a skill patch, a new skill, or an evaluation case. It does not write Hermes memory, edit skills, or enable auto-apply.
@@ -49,7 +56,7 @@ hermes-curator-evolver candidates-list --queue-db curator-review.sqlite --status
 ## Contents
 
 - [Who this is for](#who-this-is-for)
-- [Quick start: install, backfill, autorun](#quick-start-install-backfill-autorun)
+- [Quick start: install and inspect](#quick-start-install-and-inspect)
 - [At a glance](#at-a-glance)
 - [Trust boundary](#trust-boundary)
 - [Why this exists](#why-this-exists)
@@ -78,40 +85,19 @@ Use it when you want:
 
 It is **not** a general AutoML system, a skill marketplace, or an agent that freely rewrites every prompt it can see. The default path is local, model-free, reversible, and intentionally boring.
 
-## Quick start: install, backfill, autorun
+## Quick start: install and inspect
 
-Copy, paste, done. `bootstrap` handles the noisy parts: backfill old sessions + enable daily safe autorun.
-
-```bash
-hermes plugins install pingchesu/hermes-curator-evolver --enable
-uv pip install --python ~/.hermes/hermes-agent/venv/bin/python -e ~/.hermes/plugins/curator-evolver
-hermes-curator-evolver bootstrap
-```
-
-That is the default, model-free path. It writes only low-risk bounded notes to **local agent-created** skills, spills bulky evidence into `references/` when needed, then validates the changed `SKILL.md` before the apply is considered successful. Official/bundled, hub-installed, plugin-provided, `skills.external_dirs`, pinned, unknown-source, and already-over-hard-cap skills are skipped.
-
-Path discovery follows Hermes' active, profile-aware home (`get_hermes_home()` / `HERMES_HOME`). On Windows this means `%LOCALAPPDATA%\hermes`, not `~\.hermes`. Historical backfill reads the current `<HERMES_HOME>/state.db` through Hermes' read-only `SessionDB` API, including durable display-history rows archived by in-place compaction when the installed Hermes supports that API; legacy `session_*.json` imports remain available with `--sessions-dir`. Debug-only `request_dump_*.json` files are intentionally not treated as durable transcripts.
-
-Want multilingual semantic/rerank ordering? Make the opt-in explicit:
+Install through Hermes' normal plugin manager. This keeps dependency resolution, the active Hermes environment, and the enabled plugin selection under the native manager:
 
 ```bash
-uv pip install --python ~/.hermes/hermes-agent/venv/bin/python -e "$HOME/.hermes/plugins/curator-evolver[semantic]"
-hermes-curator-evolver bootstrap --semantic
+hermes plugins install privacywhen/hermes-curator-evolver --enable
 ```
 
-Quick checks:
+The native install scanner stays enabled. Review any caution findings before accepting; a dangerous verdict is a stop condition, not something to override. Do not install by editing Hermes' installed source tree or by disabling its scanner.
 
-```bash
-hermes-curator-evolver status
-# Linux / systemd:
-systemctl --user list-timers 'hermes-curator-evolver*' --all --no-pager
-# macOS / launchd:
-launchctl list | grep hermes-curator-evolver || true
-```
+Installation does not require running `bootstrap`. Bootstrap is a consequential opt-in: it can read historical session evidence, write local evidence state, and install/enable a recurring user scheduler. Review its exact effects and current profile first; see [Installation and first-run safety](docs/installation.md). Do not treat bootstrap as a harmless finishing step.
 
-`bootstrap` now installs the daily autorun with the native user scheduler: systemd user timers on Linux and a LaunchAgent plist at `~/Library/LaunchAgents/com.pingchesu.hermes-curator-evolver.auto.plist` on macOS. Use `--schedule hourly|daily|weekly` for portable cadences; custom systemd `OnCalendar` values remain Linux-only.
-
-If Hermes gateway was already running, restart it once so plugin hooks are loaded. For health checks, timer logs, model details, and uninstall steps, see [docs/after-install.md](docs/after-install.md).
+The default evidence/report and `auto-run` preview paths are local and model-free. Semantic ranking is a separate opt-in and its dependencies are not part of the base install. For operator checks and stopped-writer state migration, see [docs/after-install.md](docs/after-install.md).
 
 ## At a glance
 
@@ -122,7 +108,7 @@ If Hermes gateway was already running, restart it once so plugin hooks are loade
 ```mermaid
 flowchart LR
     S[Hermes sessions + tool calls] --> DB[(SQLite evidence)]
-    DB --> T[daily bootstrap scheduler]
+    DB --> T[optional user scheduler]
     T --> A[bounded notes to local agent-created skills]
     A -. bulky evidence .-> REF[references/ spillover]
     T -. skip .-> P[official / hub / external / pinned skills]
@@ -131,7 +117,7 @@ flowchart LR
 
 | User concern | Short answer |
 | --- | --- |
-| **Will it run by itself?** | Yes. `bootstrap` enables a daily user-level scheduler: systemd on Linux, launchd on macOS. |
+| **Will it run by itself?** | Only after the user explicitly installs/enables recurring scheduled work. Bootstrap is a consequential opt-in, not an install check. |
 | **Will it rewrite my skills?** | No. Autorun only updates a managed bounded block and spills bulky evidence to `references/`. |
 | **Will it touch official/team skills?** | No. Provenance gate skips bundled, hub, plugin, and `external_dirs` skills. |
 | **Can I inspect first?** | Yes. `auto-run --format json` is dry-run by default. |
@@ -142,7 +128,7 @@ The default experience is designed to be inspectable before it is writable:
 
 - **Read-only first:** `status`, `report`, `analyze`, `candidates`, `candidates-mine`, `candidates-list`, `propose`, `verify`, and default `auto-run` do not mutate skills.
 - **Structure-aware before merge:** `audit-skills` reports token-heavy `SKILL.md` files, missing `references/` spillover, long-line inlining, and executable support files. `merge-check` blocks source→umbrella consolidations that would drop `scripts/` or executable support capacity.
-- **No blind model dependency:** the default bootstrap path is model-free; model-assisted proposal drafting and semantic/rerank ordering require explicit opt-in flags.
+- **No blind model dependency:** the base install and read-only paths do not require models; bootstrap remains an explicit consequential action; model-assisted proposal drafting and semantic/rerank ordering require explicit opt-in flags.
 - **Narrow unattended writes:** low-risk autorun writes only a managed bounded notes block, and only after both `--apply-low-risk` and `--approve-auto-apply`.
 - **Size guardrails:** `SKILL.md` updates target a 90k soft cap, spill bulky evidence into `references/`, and skip unattended writes when the target skill is already over the 100k hard cap.
 - **Channel auto-load guard:** skills referenced by Hermes `channel_skill_bindings` are treated as high-blast-radius prompts. Autorun protects them from unattended writes by default and enforces a 12k budget even when explicitly allowlisted, so Slack-bound router skills do not grow into context-exhausting umbrellas.
@@ -237,7 +223,7 @@ flowchart LR
 | v0.6 | None by default | Automatic low-risk managed skill updates from observed evidence. | Optional `install-auto`; no Hermes core modification. |
 | v0.7 | `Qwen/Qwen3-Embedding-0.6B` + `BAAI/bge-reranker-v2-m3` | Optional model-assisted autorun candidate ordering. | Explicit `--semantic-candidates --rerank-candidates`; models only reorder evidence-eligible candidates. |
 | v0.9 | None | Provenance-safe unattended auto-apply. | Writes only local agent-created skills; skips bundled, hub, plugin, external, pinned, and unknown sources. |
-| v0.10 | None by default | One-command setup and clearer public README. | `bootstrap` backfills sessions and installs/enables autorun; `bootstrap --semantic` is explicit model opt-in. |
+| v0.10 | None by default | Explicit bootstrap command. | Bootstrap can backfill sessions and install/enable recurring autorun; it is consequential and is not part of normal installation. |
 | v0.11 | None | Size-bounded unattended auto-apply. | Keeps `SKILL.md` under the 100k tool cap by targeting a 90k soft cap, spilling bulky evidence into `references/`, and skipping already-over-hard-cap skills. |
 | v0.12 | None by default | Clean-room multi-variant candidate selection and staged verification inspired by HyperAgents concepts. | `--variants N` is deterministic/model-free; `--staged-verify` runs local structural checks before optional user-supplied verify commands. No HyperAgents dependency or model-generated code execution. |
 | v0.13 | None by default | Session-content mining for memory/skill/replay candidates. | `candidates-mine` classifies redacted evidence into a local SQLite review queue, then `candidates-list` lets reviewers decide whether an item should become memory, a skill update, a new skill, a replay benchmark, or be ignored. It is read-only and never writes memory or skills. |
@@ -304,7 +290,7 @@ If you are sharing or reviewing this project publicly, the community launch note
 ## CLI reference
 
 ```bash
-# One-command bootstrap
+# Consequential opt-in; review docs/installation.md first
 hermes-curator-evolver bootstrap
 hermes-curator-evolver bootstrap --semantic
 hermes-curator-evolver bootstrap --format json
@@ -389,9 +375,7 @@ hermes-curator-evolver uninstall-auto
 
 Plugin removal does not delete historical evidence by default. Remove it manually only if you want a clean slate:
 
-```bash
-rm -rf ~/.hermes/plugin-data/curator-evolver
-```
+Evidence and backups are retained by default. Only remove them after resolving the active profile's Hermes home, stopping every writer, and confirming an independent backup; see [after-install migration and rollback guidance](docs/after-install.md#existing-installations).
 
 ## Agent tool
 
@@ -405,28 +389,11 @@ to retrieve a JSON evidence report.
 
 ## Install from source
 
-```bash
-git clone https://github.com/pingchesu/hermes-curator-evolver.git
-cd hermes-curator-evolver
-python -m pip install -e .
-hermes plugins enable curator-evolver
-```
+Use Hermes plugin manager admission for dependency resolution, scanning, and activation. See [Installation and first-run safety](docs/installation.md).
 
-If your Hermes environment does not provide `pip`, use:
+## Local checkout
 
-```bash
-uv pip install -e .
-```
-
-## Directory-plugin install
-
-You can also symlink this repository into the Hermes plugin directory:
-
-```bash
-mkdir -p ~/.hermes/plugins
-ln -s /path/to/hermes-curator-evolver ~/.hermes/plugins/curator-evolver
-hermes plugins enable curator-evolver
-```
+Do not bypass Hermes plugin admission by manually linking a checkout into the plugin directory. Use the native plugin manager so normal scanning and dependency synchronization remain in force.
 
 ## Data location
 

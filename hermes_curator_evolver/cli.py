@@ -48,8 +48,14 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
     status = subs.add_parser("status", help="Show evidence store status")
     status.set_defaults(func=handle_cli)
 
+    inventory = subs.add_parser("privacy-inventory", help="Bounded retention inventory; never deletes evidence or backups")
+    inventory.add_argument("--retention-days", type=int, default=30)
+    inventory.add_argument("--file-limit", type=int, default=100)
+    inventory.set_defaults(func=handle_cli)
+
     report = subs.add_parser("report", help="Show aggregate evidence report")
     report.add_argument("--days", type=int, default=7, help="Lookback window in days")
+    report.add_argument("--include-legacy-previews", action="store_true", help="Explicitly disclose bounded sanitized stored content, including legacy rows, in this local report")
     report.add_argument(
         "--format", choices=["markdown", "json"], default="markdown", help="Output format"
     )
@@ -58,6 +64,7 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
     analyze = subs.add_parser("analyze", help="Show per-skill evidence")
     analyze.add_argument("--skill", required=True, help="Exact skill name to analyze")
     analyze.add_argument("--days", type=int, default=30, help="Lookback window in days")
+    analyze.add_argument("--include-legacy-previews", action="store_true", help="Explicitly disclose bounded sanitized stored content, including legacy rows, in this local report")
     analyze.add_argument(
         "--format", choices=["markdown", "json"], default="markdown", help="Output format"
     )
@@ -156,6 +163,8 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
         "candidates-list",
         help="List candidates from a review queue (read-only)",
     )
+    candidates_list.add_argument("--limit", type=int, default=100, help="Page size, 0..100")
+    candidates_list.add_argument("--offset", type=int, default=0)
     candidates_list.add_argument(
         "--queue-db", required=True, help="SQLite review queue database path"
     )
@@ -444,7 +453,10 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
 
 
 def _bounded_days(value: int | None, default: int = 7) -> int:
-    return max(1, min(int(value or default), 3650))
+    days = int(default if value is None else value)
+    if days <= 0:
+        raise ValueError("days must be positive")
+    return min(days, 3650)
 
 
 def _emit(text: str, output: str | None = None) -> None:
@@ -453,12 +465,23 @@ def _emit(text: str, output: str | None = None) -> None:
     print(text)
 
 
-def _format_bootstrap_result(result: dict, output_format: str = "text") -> str:
+def _scheduler_failed(result: dict, *, enable_requested: bool = False) -> bool:
+    """Interpret existing result fields only; never retry or operate a scheduler."""
+    command_failed = any((result.get(name) or {}).get("exit_code") not in (None, 0)
+                         for name in ("systemctl", "launchctl"))
+    return command_failed or (enable_requested and result.get("enabled") is not True)
+
+
+def _format_bootstrap_result(result: dict, output_format: str = "text", *, enable_requested: bool = False) -> str:
     if output_format == "json":
         return json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
 
     backfill = result["backfill"]
     timer = result["auto_timer"]
+    scheduler_line = ("⚠ Scheduler activation failed; installed files may remain."
+                      if _scheduler_failed(timer, enable_requested=enable_requested) else
+                      f"✓ Scheduler installed: {timer.get('schedule')} "
+                      f"({'enabled' if timer.get('enabled') else 'not enabled'})")
     if backfill.get("source_error"):
         backfill_line = f"⚠ Backfill source failed: {backfill['source_error']}"
     elif backfill.get("missing"):
@@ -471,8 +494,7 @@ def _format_bootstrap_result(result: dict, output_format: str = "text") -> str:
     lines = [
         "Hermes Curator Evolver bootstrap",
         backfill_line,
-        f"✓ Scheduler installed: {timer.get('schedule')} "
-        f"({'enabled' if timer.get('enabled') else 'not enabled'})",
+        scheduler_line,
         f"✓ Auto-apply policy: {timer.get('auto_apply_policy', 'local-agent-created-skills-only')}",
         "Next:",
     ]
@@ -530,7 +552,8 @@ def _load_jsonl_records(path: str | Path) -> list[dict]:
 
 
 def _candidate_to_payload(candidate) -> dict:
-    return {
+    from .privacy import clean_candidate
+    return clean_candidate({
         "id": candidate.id,
         "candidate_type": candidate.candidate_type,
         "title": candidate.title,
@@ -541,7 +564,7 @@ def _candidate_to_payload(candidate) -> dict:
         "auto_apply_allowed": bool(candidate.auto_apply_allowed),
         "requires_human_review": bool(candidate.requires_human_review),
         "metadata": dict(candidate.metadata or {}),
-    }
+    })
 
 
 def _run_candidates_mine(*, input_jsonl: str, queue_db: str) -> dict:
@@ -574,9 +597,12 @@ def _run_candidates_list(
     queue_db: str,
     status: str | None,
     candidate_type: str | None,
+    limit: int = 100,
+    offset: int = 0,
 ) -> dict:
     queue = ReviewQueue(queue_db, create=False)
-    rows = queue.list_candidates(status=status, candidate_type=candidate_type)
+    page = queue.list_page(status=status, candidate_type=candidate_type, limit=limit, offset=offset)
+    rows = page["candidates"]
 
     return {
         "schema_version": "0.1",
@@ -585,6 +611,7 @@ def _run_candidates_list(
         "candidate_type_filter": candidate_type,
         "count": len(rows),
         "candidates": rows,
+        "pagination": page["pagination"],
     }
 
 
@@ -631,12 +658,35 @@ def _format_candidates_payload(result: dict, *, output_format: str) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def handle_cli(args: argparse.Namespace) -> None:
-    """Dispatch CLI commands."""
+def handle_cli(args: argparse.Namespace) -> int:
+    """Native and standalone entry points share an observable outcome contract."""
+    import sqlite3
+
+    try:
+        return int(_dispatch_cli(args) or 0)
+    except (OSError, ValueError, TypeError, RuntimeError, sqlite3.Error) as exc:
+        from .hygiene import scrub
+        print(json.dumps({"success": False, "error": scrub(str(exc)),
+                          "command": vars(args).get("curator_evolver_command") or "status"}))
+        return 1
+
+
+def _dispatch_cli(args: argparse.Namespace) -> int | None:
+    """Dispatch commands; read-only paths never instantiate a writer."""
     values = vars(args)
     command = values.get("curator_evolver_command") or "status"
+    if command in {"backfill-sessions", "bootstrap"} and values.get("limit") is not None and values["limit"] <= 0:
+        raise ValueError("backfill limit must be positive; omit it for an unbounded import")
+    if command == "privacy-inventory":
+        from .inventory import privacy_inventory
+        from .paths import default_db_path, default_backup_dir
+
+        result = privacy_inventory(default_db_path(), backup_dir=default_backup_dir(),
+                                   retention_days=values["retention_days"], file_limit=values["file_limit"])
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
     if command == "status":
-        store = EvidenceStore()
+        store = EvidenceStore(read_only=True)
         summary = store.summary(days=3650)
         print("Hermes Curator Evolver")
         print(f"DB: {store.db_path}")
@@ -649,7 +699,8 @@ def handle_cli(args: argparse.Namespace) -> None:
     if command in {"report", "analyze"}:
         days = _bounded_days(values.get("days"), 7)
         skill = values.get("skill") if command == "analyze" else None
-        report = build_default_report(days=days, skill=skill)
+        report = build_default_report(days=days, skill=skill,
+                                      include_legacy_previews=bool(values.get("include_legacy_previews")))
         if values.get("format") == "json":
             print(format_json_report(report))
         else:
@@ -673,7 +724,7 @@ def handle_cli(args: argparse.Namespace) -> None:
             print(format_audit_json(check))
         else:
             print(format_consolidation_check_markdown(check))
-        return
+        return 0 if check["allowed"] else 1
 
     if command == "propose":
         days = _bounded_days(values.get("days"), 30)
@@ -693,7 +744,7 @@ def handle_cli(args: argparse.Namespace) -> None:
             proposal = build_skill_proposal(report, skill_name=skill, skill_text=skill_text)
         text = format_proposal_json(proposal) if values.get("format") == "json" else format_proposal_markdown(proposal)
         _emit(text, values.get("output"))
-        return
+        return 1 if proposal.get("model_draft", {}).get("error") else 0
 
     if command == "verify":
         proposal = json.loads(Path(values["proposal_file"]).read_text(encoding="utf-8"))
@@ -706,7 +757,7 @@ def handle_cli(args: argparse.Namespace) -> None:
             print(f"Verifier: {status}")
             if verdict["failures"]:
                 print("Failures: " + ", ".join(verdict["failures"]))
-        return
+        return 0 if verdict["passed"] else 1
 
     if command == "candidates-mine":
         result = _run_candidates_mine(
@@ -721,6 +772,8 @@ def handle_cli(args: argparse.Namespace) -> None:
             queue_db=values["queue_db"],
             status=values.get("status"),
             candidate_type=values.get("candidate_type"),
+            limit=values.get("limit", 100),
+            offset=values.get("offset", 0),
         )
         print(_format_candidates_payload(result, output_format=values.get("format") or "json"))
         return
@@ -730,7 +783,7 @@ def handle_cli(args: argparse.Namespace) -> None:
             query=str(values["query"]),
             skills_dir=values["skills_dir"],
             semantic=bool(values.get("semantic") or values.get("execute_semantic")),
-            limit=int(values.get("limit") or 10),
+            limit=int(values["limit"]) if values.get("limit") is not None else 10,
             load_models=bool(values.get("execute_semantic")),
             load_reranker=bool(values.get("rerank")),
         )
@@ -741,7 +794,7 @@ def handle_cli(args: argparse.Namespace) -> None:
             print(f"Models: {result['models']}")
             for item in result["candidates"]:
                 print(f"- {item['skill_name']} score={item['score']} reasons={', '.join(item['reasons'])}")
-        return
+        return 1 if result.get("error") else 0
 
     if command == "apply":
         result = apply_guarded_patch(
@@ -756,12 +809,12 @@ def handle_cli(args: argparse.Namespace) -> None:
             staged_verify=bool(values.get("staged_verify") or values.get("pre_verify_command")),
         )
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
-        return
+        return 0 if result.get("applied") else 1
 
     if command == "rollback":
         result = rollback_guarded_patch(values["manifest"], force=bool(values.get("force")))
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
-        return
+        return 0 if result.get("rolled_back") else 1
 
     if command == "auto-run":
         result = run_auto_evolve(
@@ -788,7 +841,10 @@ def handle_cli(args: argparse.Namespace) -> None:
             )
         )
         print(format_auto_evolve_result(result, output_format=values.get("format") or "markdown"))
-        return
+        refused = values.get("apply_low_risk") and not values.get("approve_auto_apply")
+        failed = any(item.get("apply_result", {}).get("applied") is False
+                     for item in result.get("candidates", []))
+        return 1 if refused or failed else 0
 
     if command == "restore-drill":
         report = run_restore_drill(
@@ -797,12 +853,15 @@ def handle_cli(args: argparse.Namespace) -> None:
             state_path=values.get("state_file"),
         )
         print(format_drill_report(report, output_format=values.get("format") or "json"))
-        return
+        return 1 if report.get("status") == "fail" else 0
 
     if command == "bootstrap":
         result = _run_bootstrap(values)
-        print(_format_bootstrap_result(result, output_format=values.get("format") or "text"))
-        return
+        requested = bool(values.get("enable"))
+        print(_format_bootstrap_result(result, output_format=values.get("format") or "text", enable_requested=requested))
+        backfill = result.get("backfill", {})
+        failed = backfill.get("missing") or backfill.get("source_error") or backfill.get("files_failed")
+        return 1 if failed or _scheduler_failed(result.get("auto_timer", {}), enable_requested=requested) else 0
 
     if command == "backfill-sessions":
         result = backfill_sessions(
@@ -828,7 +887,7 @@ def handle_cli(args: argparse.Namespace) -> None:
                 print(f"Source missing: {result['source_path']}")
             if result.get("source_error"):
                 print(f"Source error: {result['source_error']}")
-        return
+        return 1 if result.get("missing") or result.get("source_error") or result.get("files_failed") else 0
 
     if command == "install-auto":
         result = install_auto_timer(
@@ -846,9 +905,9 @@ def handle_cli(args: argparse.Namespace) -> None:
             verify_skills=bool(values.get("verify_skills")),
         )
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
-        return
+        return 1 if _scheduler_failed(result, enable_requested=bool(values.get("enable"))) else 0
 
     if command == "uninstall-auto":
         result = uninstall_auto_timer(disable=not bool(values.get("keep_enabled")))
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
-        return
+        return 1 if _scheduler_failed(result) else 0

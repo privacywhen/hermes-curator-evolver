@@ -25,8 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    handle_cli(args)
-    return 0
+    return handle_cli(args)
 
 
 if __name__ == "__main__":

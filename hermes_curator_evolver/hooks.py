@@ -38,9 +38,9 @@ def on_post_tool_call(
             duration_ms=duration_ms,
         )
     except (OSError, ValueError, TypeError) as exc:
-        logger.warning("curator-evolver post_tool_call skipped: %s", exc)
+        logger.warning("curator-evolver post_tool_call skipped: %s", type(exc).__name__)
     except Exception as exc:  # Hook boundary: never interrupt Hermes sessions.
-        logger.warning("curator-evolver post_tool_call failed: %s", exc)
+        logger.warning("curator-evolver post_tool_call failed: %s", type(exc).__name__)
 
 
 def on_post_llm_call(
@@ -61,9 +61,9 @@ def on_post_llm_call(
             platform=platform or "",
         )
     except (OSError, ValueError, TypeError) as exc:
-        logger.warning("curator-evolver post_llm_call skipped: %s", exc)
+        logger.warning("curator-evolver post_llm_call skipped: %s", type(exc).__name__)
     except Exception as exc:  # Hook boundary: never interrupt Hermes sessions.
-        logger.warning("curator-evolver post_llm_call failed: %s", exc)
+        logger.warning("curator-evolver post_llm_call failed: %s", type(exc).__name__)
 
 
 def on_session_end(
@@ -84,6 +84,6 @@ def on_session_end(
             platform=platform or "",
         )
     except (OSError, ValueError, TypeError) as exc:
-        logger.warning("curator-evolver on_session_end skipped: %s", exc)
+        logger.warning("curator-evolver on_session_end skipped: %s", type(exc).__name__)
     except Exception as exc:  # Hook boundary: never interrupt Hermes sessions.
-        logger.warning("curator-evolver on_session_end failed: %s", exc)
+        logger.warning("curator-evolver on_session_end failed: %s", type(exc).__name__)
