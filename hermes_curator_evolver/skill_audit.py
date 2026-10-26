@@ -233,6 +233,9 @@ def inspect_skill_structure(skill_file: str | Path) -> SkillStructure:
 
 
 def discover_auditable_skill_files(skills_dir: str | Path, *, include_archive: bool = False) -> list[Path]:
+    if not include_archive:
+        from .skill_catalog import read_skill_catalog
+        return [Path(e["path"]) for e in read_skill_catalog(skills_dir)["entries"]]
     root = Path(skills_dir)
     if not root.exists():
         return []
@@ -253,7 +256,12 @@ def audit_skill_library(skills_dir: str | Path, *, include_archive: bool = False
     """Inspect a skill tree and return token-bloat/reference/executable risks."""
 
     root = Path(skills_dir)
-    skills = [inspect_skill_structure(path) for path in discover_auditable_skill_files(root, include_archive=include_archive)]
+    from .skill_catalog import read_skill_catalog
+    catalog = read_skill_catalog(root)
+    identities = {str(Path(e["path"])): {k: v for k, v in e.items() if k != "text"} for e in catalog["entries"]}
+    paths = (discover_auditable_skill_files(root, include_archive=True) if include_archive else
+             [Path(e["path"]) for e in catalog["entries"]])
+    skills = [inspect_skill_structure(path) for path in paths]
     risk_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "ok": 0}
     issue_counts: dict[str, int] = {}
     for skill in skills:
@@ -262,6 +270,9 @@ def audit_skill_library(skills_dir: str | Path, *, include_archive: bool = False
             issue_counts[issue.code] = issue_counts.get(issue.code, 0) + 1
     return {
         "schema_version": "0.1",
+        "scope": "physical-structural-audit",
+        "canonical_inventory": False,
+        "catalog": {k: v for k, v in catalog.items() if k != "entries"},
         "skills_dir": str(root),
         "include_archive": bool(include_archive),
         "total_skills": len(skills),
@@ -271,7 +282,9 @@ def audit_skill_library(skills_dir: str | Path, *, include_archive: bool = False
             "risky_skill_count": len([skill for skill in skills if skill.risk != "ok"]),
             "executable_skill_count": len([skill for skill in skills if skill.has_executable_capacity]),
         },
-        "skills": [asdict(skill) for skill in sorted(skills, key=lambda item: (item.risk == "ok", -item.chars, item.name))],
+        "skills": [dict(asdict(skill), catalog=identities.get(str(Path(skill.path)),
+                    {"status": "unknown", "scope": "physical-archive"}))
+                   for skill in sorted(skills, key=lambda item: (item.risk == "ok", -item.chars, item.name))],
     }
 
 

@@ -57,6 +57,58 @@ def test_tool_handler_returns_json_string(tmp_path, monkeypatch):
     assert "summary" in result
 
 
+def test_native_cli_binds_no_tool_host_completion_and_discloses_before_call(tmp_path, monkeypatch, capsys):
+    import argparse
+    import json
+    from types import SimpleNamespace
+    from hermes_curator_evolver.storage import EvidenceStore
+
+    monkeypatch.setenv("HERMES_CURATOR_EVOLVER_DB", str(tmp_path / "synthetic.sqlite"))
+    EvidenceStore()
+    calls = []
+    def forbidden(*args, **kwargs):
+        raise AssertionError("No subprocess or tool dispatcher may run")
+    monkeypatch.setattr("subprocess.run", forbidden)
+    ctx = FakeCtx()
+    ctx.dispatch_tool = forbidden
+    def complete(**kwargs):
+        assert "host" in capsys.readouterr().err.lower()  # Before any transmission.
+        calls.append(kwargs)
+        return SimpleNamespace(text='{"tool_calls": [{"name": "terminal"}]}',
+                               provider="synthetic-provider", model="synthetic-model")
+    ctx.llm = SimpleNamespace(complete=complete)
+    hermes_curator_evolver.register(ctx)
+    parser = argparse.ArgumentParser()
+    ctx.cli_commands[0][2](parser)
+    args = parser.parse_args(["propose", "--skill", "synthetic", "--draft-with-model", "--format", "json"])
+    assert args.func(args) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert len(calls) == 1
+    assert set(calls[0]) == {"messages", "max_tokens", "timeout", "temperature", "purpose"}
+    assert result["model_draft"]["actual_route"] == {"provider": "synthetic-provider", "model": "synthetic-model"}
+    assert result["model_draft"]["semantic_verified"] is False
+    assert result["mutation_allowed"] is False
+
+
+def test_native_default_does_not_even_resolve_llm_without_consent(tmp_path, monkeypatch, capsys):
+    import argparse
+    import json
+    from hermes_curator_evolver.storage import EvidenceStore
+    monkeypatch.setenv("HERMES_CURATOR_EVOLVER_DB", str(tmp_path / "synthetic.sqlite"))
+    EvidenceStore()
+    class Context(FakeCtx):
+        @property
+        def llm(self):
+            raise AssertionError("No consent to resolve or call a model")
+    ctx = Context()
+    hermes_curator_evolver.register(ctx)
+    parser = argparse.ArgumentParser()
+    ctx.cli_commands[0][2](parser)
+    args = parser.parse_args(["propose", "--skill", "synthetic", "--format", "json"])
+    assert args.func(args) == 0
+    assert "model_draft" not in json.loads(capsys.readouterr().out)
+
+
 def test_directory_plugin_shim_uses_relative_package_import(tmp_path, monkeypatch):
     repo_root = Path(__file__).resolve().parents[1]
     plugin_dir = tmp_path / "curator-evolver"
@@ -72,7 +124,7 @@ def test_directory_plugin_shim_uses_relative_package_import(tmp_path, monkeypatc
         except OSError:
             pass
     monkeypatch.setattr(sys, "path", sys.path)
-    sys.modules.pop("hermes_curator_evolver", None)
+    monkeypatch.delitem(sys.modules, "hermes_curator_evolver", raising=False)
     try:
         spec = importlib.util.spec_from_file_location(
             "hermes_plugins.curator_evolver",

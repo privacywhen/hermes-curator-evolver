@@ -1,10 +1,9 @@
 """Skill source provenance for safe unattended auto-apply.
 
-The evolver must not rely on skill-name globs alone. Hermes already tracks which
-skills came from bundled/official sources and the skills hub; user config may also
-expose shared read-only trees via ``skills.external_dirs``. This module mirrors
-that provenance locally so the plugin can keep Hermes core untouched while only
-mutating local agent-created skills.
+Source hints protect bundled/Hub/external ownership. Physical placement is not
+proof of authorship, native management opt-in, or a single-writer handoff. Source
+classification alone never grants unattended write permission; the read-only
+catalog reports identity and management separately.
 """
 
 from __future__ import annotations
@@ -76,7 +75,7 @@ def _read_bundled_manifest_names(local_skills_dir: Path) -> frozenset[str]:
             name = stripped.split(":", 1)[0].strip()
             if name:
                 names.add(name)
-    except OSError:
+    except (OSError, UnicodeError):
         return frozenset()
     return frozenset(names)
 
@@ -87,7 +86,7 @@ def _read_hub_installed_names(local_skills_dir: Path) -> frozenset[str]:
         return frozenset()
     try:
         parsed = json.loads(lock_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return frozenset()
     if not isinstance(parsed, dict):
         return frozenset()
@@ -103,7 +102,7 @@ def _load_config(hermes_home: Path) -> dict[str, Any]:
         return {}
     try:
         parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError):
+    except (OSError, UnicodeError, yaml.YAMLError):
         return {}
     if isinstance(parsed, dict):
         return parsed
@@ -204,6 +203,7 @@ def classify_skill_source(
     except OSError:
         local_skills_dir = context.local_skills_dir
     if _is_relative_to(resolved, local_skills_dir):
-        return SkillSourceInfo(source=SOURCE_LOCAL_AGENT_CREATED, writable=True)
+        # Placement proves neither authorship nor native management/write consent.
+        return SkillSourceInfo(source=SOURCE_UNKNOWN, writable=False)
 
     return SkillSourceInfo(source=SOURCE_UNKNOWN, writable=False)

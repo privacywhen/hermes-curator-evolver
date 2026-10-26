@@ -21,7 +21,8 @@ from .proposals import (
     build_skill_proposal,
     format_proposal_json,
     format_proposal_markdown,
-    hermes_chat_backend,
+    native_chat_backend,
+    DRAFT_EGRESS_DISCLOSURE,
 )
 from .reports import build_default_report, format_json_report, format_markdown_report
 from .restore_drill import (
@@ -41,17 +42,18 @@ from .storage import EvidenceStore
 from .verifier import verify_proposal
 
 
-def setup_cli(subparser: argparse.ArgumentParser) -> None:
+def setup_cli(subparser: argparse.ArgumentParser, *, handler_fn=None) -> None:
     """Build argparse tree for Hermes plugin CLI registration."""
+    dispatch = handler_fn if handler_fn is not None else handle_cli
     subs = subparser.add_subparsers(dest="curator_evolver_command")
 
     status = subs.add_parser("status", help="Show evidence store status")
-    status.set_defaults(func=handle_cli)
+    status.set_defaults(func=dispatch)
 
     inventory = subs.add_parser("privacy-inventory", help="Bounded retention inventory; never deletes evidence or backups")
     inventory.add_argument("--retention-days", type=int, default=30)
     inventory.add_argument("--file-limit", type=int, default=100)
-    inventory.set_defaults(func=handle_cli)
+    inventory.set_defaults(func=dispatch)
 
     report = subs.add_parser("report", help="Show aggregate evidence report")
     report.add_argument("--days", type=int, default=7, help="Lookback window in days")
@@ -59,7 +61,7 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
     report.add_argument(
         "--format", choices=["markdown", "json"], default="markdown", help="Output format"
     )
-    report.set_defaults(func=handle_cli)
+    report.set_defaults(func=dispatch)
 
     analyze = subs.add_parser("analyze", help="Show per-skill evidence")
     analyze.add_argument("--skill", required=True, help="Exact skill name to analyze")
@@ -68,7 +70,7 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
     analyze.add_argument(
         "--format", choices=["markdown", "json"], default="markdown", help="Output format"
     )
-    analyze.set_defaults(func=handle_cli)
+    analyze.set_defaults(func=dispatch)
 
     audit_skills = subs.add_parser(
         "audit-skills",
@@ -83,7 +85,7 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
     audit_skills.add_argument(
         "--format", choices=["markdown", "json"], default="markdown", help="Output format"
     )
-    audit_skills.set_defaults(func=handle_cli)
+    audit_skills.set_defaults(func=dispatch)
 
     merge_check = subs.add_parser(
         "merge-check",
@@ -94,7 +96,7 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
     merge_check.add_argument(
         "--format", choices=["markdown", "json"], default="markdown", help="Output format"
     )
-    merge_check.set_defaults(func=handle_cli)
+    merge_check.set_defaults(func=dispatch)
 
     propose = subs.add_parser("propose", help="Generate a dry-run skill proposal")
     propose.add_argument("--skill", required=True, help="Exact skill name")
@@ -107,10 +109,10 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
     propose.add_argument(
         "--draft-with-model",
         action="store_true",
-        help="Call the current Hermes chat model for draft text (still dry-run)",
+        help="Explicitly consent to transmitting bounded sanitized skill text and evidence metadata to the host active provider/model and configured fallback; draft only, no tools or apply",
     )
-    propose.add_argument("--model-timeout", type=int, default=180, help="Hermes chat draft timeout seconds")
-    propose.set_defaults(func=handle_cli)
+    propose.add_argument("--model-timeout", type=int, default=180, help="Host completion timeout, 1–300 seconds")
+    propose.set_defaults(func=dispatch)
 
     verify = subs.add_parser("verify", help="Verify a dry-run proposal")
     verify.add_argument("--proposal-file", required=True, help="JSON proposal file")
@@ -119,7 +121,7 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
     verify.add_argument(
         "--format", choices=["text", "json"], default="text", help="Output format"
     )
-    verify.set_defaults(func=handle_cli)
+    verify.set_defaults(func=dispatch)
 
     candidates = subs.add_parser("candidates", help="Find candidate skills for review")
     candidates.add_argument("--query", required=True, help="Evidence/query text")
@@ -139,7 +141,7 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
     candidates.add_argument(
         "--format", choices=["text", "json"], default="text", help="Output format"
     )
-    candidates.set_defaults(func=handle_cli)
+    candidates.set_defaults(func=dispatch)
 
     candidates_mine = subs.add_parser(
         "candidates-mine",
@@ -157,7 +159,7 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
         default="json",
         help="Output format",
     )
-    candidates_mine.set_defaults(func=handle_cli)
+    candidates_mine.set_defaults(func=dispatch)
 
     candidates_list = subs.add_parser(
         "candidates-list",
@@ -190,7 +192,7 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
         default="json",
         help="Output format",
     )
-    candidates_list.set_defaults(func=handle_cli)
+    candidates_list.set_defaults(func=dispatch)
 
     apply_cmd = subs.add_parser("apply", help="Apply reviewed content with guardrails")
     apply_cmd.add_argument("--target", required=True, help="Target file to replace")
@@ -209,12 +211,12 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
         help="Run built-in cheap structural check before any --verify-command",
     )
     apply_cmd.add_argument("--approve", action="store_true", help="Explicitly approve applying")
-    apply_cmd.set_defaults(func=handle_cli)
+    apply_cmd.set_defaults(func=dispatch)
 
     rollback = subs.add_parser("rollback", help="Rollback from a guarded apply manifest")
     rollback.add_argument("--manifest", required=True, help="Path to manifest.json")
     rollback.add_argument("--force", action="store_true", help="Rollback even if target changed after apply")
-    rollback.set_defaults(func=handle_cli)
+    rollback.set_defaults(func=dispatch)
 
     restore_drill = subs.add_parser(
         "restore-drill",
@@ -232,7 +234,7 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
     restore_drill.add_argument(
         "--format", choices=["markdown", "json"], default="json", help="Output format"
     )
-    restore_drill.set_defaults(func=handle_cli)
+    restore_drill.set_defaults(func=dispatch)
 
     auto_run = subs.add_parser("auto-run", help="Run one automatic low-risk evolution pass")
     auto_run.add_argument("--days", type=int, default=7, help="Lookback window in days")
@@ -250,11 +252,11 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Opt into reranker-backed candidate ordering; implies --semantic-candidates",
     )
-    auto_run.add_argument("--apply-low-risk", action="store_true", help="Apply low-risk bounded managed updates")
+    auto_run.add_argument("--apply-low-risk", action="store_true", help="Legacy apply request; currently proposal-only without a native single-writer handoff")
     auto_run.add_argument(
         "--approve-auto-apply",
         action="store_true",
-        help="Required with --apply-low-risk before any file writes occur",
+        help="Legacy approval flag; does not establish native writer permission",
     )
     auto_run.add_argument(
         "--protect-core-skills",
@@ -267,14 +269,14 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
         "--no-protect-core-skills",
         dest="protect_core_skills",
         action="store_false",
-        help="Allow unattended writes to core skills; use only after explicit review",
+        help="Relax core proposal filtering; does not grant native writer permission",
     )
     auto_run.add_argument(
         "--allow-auto-apply-skill",
         action="append",
         default=[],
         metavar="PATTERN",
-        help="Glob pattern that may auto-apply within the local agent-created source boundary; also explicitly permits matching core skills",
+        help="Allow a matching core proposal; never overrides native ownership or the single-writer barrier",
     )
     auto_run.add_argument(
         "--block-auto-apply-skill",
@@ -312,7 +314,7 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
     auto_run.add_argument(
         "--format", choices=["markdown", "json"], default="markdown", help="Output format"
     )
-    auto_run.set_defaults(func=handle_cli)
+    auto_run.set_defaults(func=dispatch)
 
     bootstrap = subs.add_parser(
         "bootstrap",
@@ -369,7 +371,7 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
     bootstrap.add_argument(
         "--format", choices=["text", "json"], default="text", help="Output format"
     )
-    bootstrap.set_defaults(func=handle_cli)
+    bootstrap.set_defaults(func=dispatch)
 
     backfill = subs.add_parser("backfill-sessions", help="Import historical Hermes session transcripts into evidence")
     backfill_source = backfill.add_mutually_exclusive_group()
@@ -386,7 +388,7 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
     backfill.add_argument(
         "--format", choices=["text", "json"], default="text", help="Output format"
     )
-    backfill.set_defaults(func=handle_cli)
+    backfill.set_defaults(func=dispatch)
 
     install_auto = subs.add_parser("install-auto", help="Install a user scheduler for auto-run")
     install_auto.add_argument(
@@ -443,13 +445,13 @@ def setup_cli(subparser: argparse.ArgumentParser) -> None:
     install_auto.add_argument("--verify-command", help="Custom command to validate after each scheduler apply")
     install_auto.add_argument("--verify-cwd", help="Working directory for scheduler verification command")
     install_auto.add_argument("--enable", action="store_true", help="Enable and start the scheduler now")
-    install_auto.set_defaults(func=handle_cli)
+    install_auto.set_defaults(func=dispatch)
 
     uninstall_auto = subs.add_parser("uninstall-auto", help="Remove the user auto-run scheduler")
     uninstall_auto.add_argument("--keep-enabled", action="store_true", help="Do not disable/unload scheduler before removing files")
-    uninstall_auto.set_defaults(func=handle_cli)
+    uninstall_auto.set_defaults(func=dispatch)
 
-    subparser.set_defaults(func=handle_cli)
+    subparser.set_defaults(func=dispatch)
 
 
 def _bounded_days(value: int | None, default: int = 7) -> int:
@@ -472,6 +474,11 @@ def _scheduler_failed(result: dict, *, enable_requested: bool = False) -> bool:
     return command_failed or (enable_requested and result.get("enabled") is not True)
 
 
+def _backfill_failed(result: dict) -> bool:
+    return any(result.get(key) for key in ("missing", "source_error", "source_failures",
+               "files_failed", "sessions_failed", "pagination_truncated", "partial"))
+
+
 def _format_bootstrap_result(result: dict, output_format: str = "text", *, enable_requested: bool = False) -> str:
     if output_format == "json":
         return json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
@@ -486,6 +493,8 @@ def _format_bootstrap_result(result: dict, output_format: str = "text", *, enabl
         backfill_line = f"⚠ Backfill source failed: {backfill['source_error']}"
     elif backfill.get("missing"):
         backfill_line = f"⚠ Backfill source not found: {backfill.get('source_path')}"
+    elif _backfill_failed(backfill):
+        backfill_line = "⚠ Backfill partial: inspect failed sessions/source and pagination counters."
     else:
         backfill_line = (
             f"✓ Backfilled {backfill.get('sessions_imported', 0)} session(s), "
@@ -494,8 +503,11 @@ def _format_bootstrap_result(result: dict, output_format: str = "text", *, enabl
     lines = [
         "Hermes Curator Evolver bootstrap",
         backfill_line,
+        f"Backfill counts: imported={backfill.get('events_imported', backfill.get('tool_events_imported', 0))}, "
+        f"duplicates={backfill.get('events_duplicates', 0)}, failed={backfill.get('events_failed', 0)}, "
+        f"sessions_failed={backfill.get('sessions_failed', 0)}, source_failures={backfill.get('source_failures', 0)}",
         scheduler_line,
-        f"✓ Auto-apply policy: {timer.get('auto_apply_policy', 'local-agent-created-skills-only')}",
+        f"✓ Auto-apply policy: {timer.get('auto_apply_policy', 'unknown (proposal-only)')}",
         "Next:",
     ]
     lines.extend(f"- {item}" for item in result["next_steps"])
@@ -658,12 +670,12 @@ def _format_candidates_payload(result: dict, *, output_format: str) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def handle_cli(args: argparse.Namespace) -> int:
+def handle_cli(args: argparse.Namespace, *, context=None) -> int:
     """Native and standalone entry points share an observable outcome contract."""
     import sqlite3
 
     try:
-        return int(_dispatch_cli(args) or 0)
+        return int(_dispatch_cli(args, context=context) or 0)
     except (OSError, ValueError, TypeError, RuntimeError, sqlite3.Error) as exc:
         from .hygiene import scrub
         print(json.dumps({"success": False, "error": scrub(str(exc)),
@@ -671,7 +683,7 @@ def handle_cli(args: argparse.Namespace) -> int:
         return 1
 
 
-def _dispatch_cli(args: argparse.Namespace) -> int | None:
+def _dispatch_cli(args: argparse.Namespace, *, context=None) -> int | None:
     """Dispatch commands; read-only paths never instantiate a writer."""
     values = vars(args)
     command = values.get("curator_evolver_command") or "status"
@@ -733,12 +745,15 @@ def _dispatch_cli(args: argparse.Namespace) -> int | None:
         skill_text = Path(skill_file).read_text(encoding="utf-8") if skill_file else ""
         report = build_default_report(days=days, skill=skill)
         if values.get("draft_with_model"):
-            timeout = int(values.get("model_timeout") or 180)
+            import sys
+            timeout = int(values.get("model_timeout", 180))
+            print("Host draft evidence-egress consent: " + json.dumps(DRAFT_EGRESS_DISCLOSURE), file=sys.stderr, flush=True)
             proposal = build_model_drafted_proposal(
                 report,
                 skill_name=skill,
                 skill_text=skill_text,
-                chat_backend=lambda prompt: hermes_chat_backend(prompt, timeout_seconds=timeout),
+                chat_backend=native_chat_backend(context, timeout_seconds=timeout),
+                allow_evidence_egress=True,
             )
         else:
             proposal = build_skill_proposal(report, skill_name=skill, skill_text=skill_text)
@@ -860,7 +875,7 @@ def _dispatch_cli(args: argparse.Namespace) -> int | None:
         requested = bool(values.get("enable"))
         print(_format_bootstrap_result(result, output_format=values.get("format") or "text", enable_requested=requested))
         backfill = result.get("backfill", {})
-        failed = backfill.get("missing") or backfill.get("source_error") or backfill.get("files_failed")
+        failed = _backfill_failed(backfill)
         return 1 if failed or _scheduler_failed(result.get("auto_timer", {}), enable_requested=requested) else 0
 
     if command == "backfill-sessions":
@@ -878,6 +893,10 @@ def _dispatch_cli(args: argparse.Namespace) -> int | None:
             print(f"DB: {result['db_path']}")
             print(f"Sessions seen: {result['sessions_seen']}")
             print(f"Sessions imported: {result['sessions_imported']}")
+            for key in ("sessions_selected", "sessions_attempted", "sessions_duplicates", "sessions_failed",
+                        "source_failures", "events_attempted", "events_imported", "events_duplicates", "events_failed",
+                        "pagination_truncated", "partial"):
+                print(f"{key}: {result.get(key, 0)}")
             print(f"Skipped old sessions: {result['sessions_skipped_old']}")
             print(f"Failed files: {result['files_failed']}")
             print(f"Tool events imported: {result['tool_events_imported']}")
@@ -887,7 +906,8 @@ def _dispatch_cli(args: argparse.Namespace) -> int | None:
                 print(f"Source missing: {result['source_path']}")
             if result.get("source_error"):
                 print(f"Source error: {result['source_error']}")
-        return 1 if result.get("missing") or result.get("source_error") or result.get("files_failed") else 0
+        failed = _backfill_failed(result)
+        return 1 if failed else 0
 
     if command == "install-auto":
         result = install_auto_timer(

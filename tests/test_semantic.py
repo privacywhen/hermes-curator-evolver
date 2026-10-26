@@ -165,8 +165,8 @@ def test_semantic_execution_truncates_text_and_uses_small_batches(tmp_path, monk
     assert result["runtime"]["text_limit_chars"] == 240
     assert backend.kwargs["batch_size"] == 1
     assert backend.kwargs["convert_to_tensor"] is False
-    assert len(backend.texts[1]) < 320
-    assert "truncated" in backend.texts[1]
+    assert len(backend.texts[1]) <= 240
+    assert "truncated" not in backend.texts[1]
 
 
 def test_semantic_execution_failure_returns_unavailable_instead_of_crashing(tmp_path):
@@ -182,7 +182,8 @@ def test_semantic_execution_failure_returns_unavailable_instead_of_crashing(tmp_
         embedding_backend=FailingEmbeddingBackend(),
     )
 
-    assert result["mode"] == "semantic-execution-unavailable"
-    assert result["model_executed"] is False
-    assert result["candidates"] == []
-    assert "simulated model OOM" in result["error"]
+    assert result["mode"] == "semantic-fallback"
+    assert result["model_executed"] is True
+    assert result["stages"]["embedding"] == "failed"
+    assert result["fallback"] == "lexical"
+    assert result["candidates"]

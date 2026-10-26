@@ -227,12 +227,13 @@ def test_auto_evolve_dry_run_plans_low_risk_updates_without_writing(tmp_path):
     assert sha256_file(skill_file) == original_hash
 
 
-def test_auto_evolve_apply_low_risk_updates_skill_with_backup(tmp_path):
+def test_auto_evolve_apply_request_remains_proposal_only_without_handoff(tmp_path):
     db = tmp_path / "evidence.sqlite"
     store = EvidenceStore(db)
     skills = tmp_path / "skills"
     backups = tmp_path / "backups"
     skill_file = _write_skill(skills, "store-playbook")
+    original_content = skill_file.read_bytes()
     store.record_tool_call(
         tool_name="skill_view",
         args={"name": "store-playbook"},
@@ -252,15 +253,16 @@ def test_auto_evolve_apply_low_risk_updates_skill_with_backup(tmp_path):
         )
     )
 
-    updated = skill_file.read_text(encoding="utf-8")
+    candidate = result["candidates"][0]
     assert result["mode"] == "apply-low-risk"
-    assert result["summary"]["applied"] == 1
-    assert result["candidates"][0]["apply_result"]["applied"] is True
-    assert "Auto-curated evidence notes" in updated
-    assert Path(result["candidates"][0]["apply_result"]["manifest_path"]).exists()
+    assert result["summary"]["applied"] == 0
+    assert candidate["status"] == "proposal-only"
+    assert candidate["apply_result"]["reason"] == "native-single-writer-handoff-required"
+    assert skill_file.read_bytes() == original_content
+    assert not backups.exists() or not list(backups.rglob("*"))
 
 
-def test_auto_evolve_spills_near_limit_evidence_to_reference_file(tmp_path, monkeypatch):
+def test_auto_evolve_near_limit_support_remains_proposal_without_writes(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_CURATOR_EVOLVER_COLLECT_PREVIEWS", "1")
     db = tmp_path / "evidence.sqlite"
     store = EvidenceStore(db, preview_chars=6_000)
@@ -268,6 +270,7 @@ def test_auto_evolve_spills_near_limit_evidence_to_reference_file(tmp_path, monk
     backups = tmp_path / "backups"
     base_body = "A" * 98_600
     skill_file = _write_skill(skills, "store-playbook", base_body)
+    original_content = skill_file.read_text(encoding="utf-8")
     long_preview = "overflow evidence " + "B" * 4_000
     store.record_tool_call(
         tool_name="terminal",
@@ -289,18 +292,13 @@ def test_auto_evolve_spills_near_limit_evidence_to_reference_file(tmp_path, monk
     )
 
     candidate = result["candidates"][0]
-    updated = skill_file.read_text(encoding="utf-8")
-    references = sorted((skill_file.parent / "references").glob("curator-evolver-auto-*.md"))
-    assert result["summary"]["applied"] == 1
+    assert result["summary"]["applied"] == 0
+    assert candidate["status"] == "proposal-only"
+    assert candidate["apply_result"]["reason"] == "native-single-writer-handoff-required"
     assert candidate["size_strategy"] == "reference-spillover"
-    assert len(updated) <= 100_000
-    assert "Detailed evidence moved to" in updated
-    assert long_preview not in updated
-    assert references, "expected detailed evidence spillover reference file"
-    reference_text = references[0].read_text(encoding="utf-8")
-    assert long_preview[:1000] not in reference_text  # Collection opt-in is not legacy publication consent.
-    assert "content_omitted" in reference_text
-    assert long_preview not in reference_text  # Explicit preview safety cap also applies to spillover.
+    assert skill_file.read_text(encoding="utf-8") == original_content
+    assert not (skill_file.parent / "references").exists()
+    assert not backups.exists() or not list(backups.rglob("*"))
 
 
 def test_auto_evolve_skips_apply_when_skill_already_exceeds_hard_cap(tmp_path):
@@ -454,7 +452,7 @@ def test_auto_evolve_semantic_rerank_reorders_evidence_eligible_skills(tmp_path)
     assert result["selection"]["models"]["reranker"] == "bge-reranker-v2-m3"
     assert result["candidates"][0]["skill_name"] == "plugin-gateway"
     assert result["candidates"][0]["selection"]["score"] == 10.0
-    assert "reranker relevance score" in result["candidates"][0]["selection"]["reasons"]
+    assert "reranker relevance score (uncalibrated)" in result["candidates"][0]["selection"]["reasons"]
 
 
 def test_auto_evolve_semantic_does_not_select_skills_without_evidence_threshold(tmp_path):
@@ -594,15 +592,15 @@ def test_auto_evolve_auto_apply_skips_core_skills_by_default_but_applies_non_cor
 
     by_name = {candidate["skill_name"]: candidate for candidate in result["candidates"]}
     assert result["safety"]["protect_core_skills"] is True
-    assert result["safety"]["auto_apply_policy"] == "local-agent-created-skills-only"
+    assert result["safety"]["auto_apply_policy"] == "proposal-only-native-single-writer-handoff-required"
     assert by_name["hermes-agent"]["status"] == "skipped"
-    assert by_name["hermes-agent"]["reason"] == "core-skill-auto-apply-protected"
-    assert "apply_result" not in by_name["hermes-agent"]
-    assert by_name["store-playbook"]["status"] == "applied"
-    assert by_name["store-playbook"]["apply_result"]["applied"] is True
-    assert result["summary"]["applied"] == 1
+    assert by_name["hermes-agent"]["reason"] in {"core-skill-auto-apply-protected", "native-source-protected"}
+    assert by_name["store-playbook"]["status"] == "proposal-only"
+    assert by_name["store-playbook"]["apply_result"]["reason"] == "native-single-writer-handoff-required"
+    assert result["summary"]["applied"] == 0
     assert sha256_file(core_file) == core_hash
-    assert "Auto-curated evidence notes" in non_core_file.read_text(encoding="utf-8")
+    assert "Auto-curated evidence notes" not in non_core_file.read_text(encoding="utf-8")
+    assert not backups.exists() or not list(backups.rglob("*"))
 
 
 def test_auto_evolve_dry_run_still_plans_core_skills_for_review(tmp_path):
@@ -635,7 +633,7 @@ def test_auto_evolve_dry_run_still_plans_core_skills_for_review(tmp_path):
     assert sha256_file(skill_file) == original_hash
 
 
-def test_auto_evolve_allowlist_can_explicitly_permit_one_core_skill(tmp_path):
+def test_auto_evolve_allowlist_does_not_override_native_no_handoff(tmp_path):
     db = tmp_path / "evidence.sqlite"
     store = EvidenceStore(db)
     skills = tmp_path / "skills"
@@ -661,10 +659,12 @@ def test_auto_evolve_allowlist_can_explicitly_permit_one_core_skill(tmp_path):
         )
     )
 
-    assert result["summary"]["applied"] == 1
-    assert result["candidates"][0]["status"] == "applied"
-    assert result["candidates"][0]["apply_result"]["applied"] is True
-    assert "Auto-curated evidence notes" in skill_file.read_text(encoding="utf-8")
+    candidate = result["candidates"][0]
+    assert result["summary"]["applied"] == 0
+    assert candidate["status"] == "proposal-only"
+    assert candidate["apply_result"]["reason"] == "native-single-writer-handoff-required"
+    assert "Auto-curated evidence notes" not in skill_file.read_text(encoding="utf-8")
+    assert not backups.exists() or not list(backups.rglob("*"))
 
 
 def test_auto_evolve_skips_bundled_manifest_skill_even_if_allowlisted(tmp_path):
@@ -699,7 +699,7 @@ def test_auto_evolve_skips_bundled_manifest_skill_even_if_allowlisted(tmp_path):
     candidate = result["candidates"][0]
     assert candidate["source"] == "bundled"
     assert candidate["status"] == "skipped"
-    assert candidate["reason"] == "source-not-agent-created"
+    assert candidate["reason"] == "native-source-protected"
     assert "apply_result" not in candidate
     assert result["summary"]["applied"] == 0
     assert sha256_file(skill_file) == original_hash
@@ -741,7 +741,7 @@ def test_auto_evolve_skips_hub_installed_skill(tmp_path):
     candidate = result["candidates"][0]
     assert candidate["source"] == "hub-installed"
     assert candidate["status"] == "skipped"
-    assert candidate["reason"] == "source-not-agent-created"
+    assert candidate["reason"] == "native-source-protected"
     assert result["summary"]["applied"] == 0
     assert sha256_file(skill_file) == original_hash
 
@@ -782,7 +782,7 @@ def test_auto_evolve_skips_external_dir_skill(tmp_path, monkeypatch):
     candidate = result["candidates"][0]
     assert candidate["source"] == "external-dir"
     assert candidate["status"] == "skipped"
-    assert candidate["reason"] == "source-not-agent-created"
+    assert candidate["reason"] == "native-source-protected"
     assert result["summary"]["applied"] == 0
     assert sha256_file(skill_file) == original_hash
 
@@ -959,12 +959,13 @@ def test_auto_evolve_variants_dry_run_exposes_summaries_and_winner(tmp_path):
     assert result["config"]["variants"] == 3
 
 
-def test_auto_evolve_variants_apply_uses_winner_only(tmp_path):
+def test_auto_evolve_variants_propose_winner_without_applying(tmp_path):
     db = tmp_path / "evidence.sqlite"
     store = EvidenceStore(db)
     skills = tmp_path / "skills"
     backups = tmp_path / "backups"
     skill_file = _write_skill(skills, "store-playbook")
+    original_content = skill_file.read_bytes()
     for index in range(4):
         store.record_tool_call(
             tool_name="terminal",
@@ -989,18 +990,12 @@ def test_auto_evolve_variants_apply_uses_winner_only(tmp_path):
     candidate = result["candidates"][0]
     written = skill_file.read_text(encoding="utf-8")
     selected_index = candidate["selected_variant"]["index"]
-    winning_content = next(
-        variant for variant in candidate["variants"] if variant["index"] == selected_index
-    )
-    assert candidate["status"] == "applied"
-    assert written.count("<!-- curator-evolver:auto:start -->") == 1
-    # Each variant has a distinct guidance phrasing — confirm the winner's phrasing made it in.
-    if winning_content["spec"]["guidance_style"] == "evidence-first":
-        assert "Reuse the matching evidence row above" in written
-    elif winning_content["spec"]["guidance_style"] == "errors-first":
-        assert "Replay the most recent error-marked evidence" in written
-    else:
-        assert "When this skill is relevant, check these observed signals" in written
+    assert any(variant["index"] == selected_index for variant in candidate["variants"])
+    assert candidate["status"] == "proposal-only"
+    assert candidate["apply_result"]["reason"] == "native-single-writer-handoff-required"
+    assert result["summary"]["applied"] == 0
+    assert skill_file.read_bytes() == original_content
+    assert not backups.exists() or not list(backups.rglob("*"))
 
 
 def test_auto_evolve_variants_is_deterministic(tmp_path):
@@ -1042,12 +1037,13 @@ def test_auto_evolve_variants_is_deterministic(tmp_path):
     )
 
 
-def test_auto_evolve_apply_uses_staged_verify_when_pre_verify_command_set(tmp_path):
+def test_auto_evolve_apply_request_does_not_run_verifier_without_handoff(tmp_path):
     db = tmp_path / "evidence.sqlite"
     store = EvidenceStore(db)
     skills = tmp_path / "skills"
     backups = tmp_path / "backups"
     skill_file = _write_skill(skills, "store-playbook")
+    original_content = skill_file.read_bytes()
     store.record_tool_call(
         tool_name="skill_view",
         args={"name": "store-playbook"},
@@ -1069,11 +1065,9 @@ def test_auto_evolve_apply_uses_staged_verify_when_pre_verify_command_set(tmp_pa
     )
 
     candidate = result["candidates"][0]
-    verify = candidate["apply_result"]["verify"]
-    assert verify["staged"] is True
-    stage_names = [stage["name"] for stage in verify["stages"]]
-    assert stage_names[0] == "builtin-structural"
-    assert "pre-verify-command" in stage_names
-    assert candidate["status"] == "applied"
-    assert "Auto-curated evidence notes" in skill_file.read_text(encoding="utf-8")
+    assert candidate["status"] == "proposal-only"
+    assert candidate["apply_result"]["reason"] == "native-single-writer-handoff-required"
+    assert result["summary"]["applied"] == 0
+    assert skill_file.read_bytes() == original_content
+    assert not backups.exists() or not list(backups.rglob("*"))
     assert result["config"]["staged_verify"] is True

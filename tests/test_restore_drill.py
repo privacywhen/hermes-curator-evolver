@@ -49,6 +49,22 @@ def _apply_for_drill(tmp_path: Path, *, target_body: str = "old content\n") -> d
     )
 
 
+def _seed_manual_apply(tmp_path: Path, skills: Path, backups: Path, name: str) -> dict:
+    """Create prior drill state through the explicit guarded manual-apply API."""
+    target = skills / name / "SKILL.md"
+    return apply_guarded_patch(
+        target_path=target,
+        new_content=target.read_text(encoding="utf-8") + "\n# manually approved change\n",
+        expected_sha256=sha256_file(target),
+        approved=True,
+        backup_root=backups,
+        skill_name=name,
+        provenance={"source": "local-agent-created", "writable": True},
+        evidence_refs={"db_path": str(tmp_path / "evidence.sqlite"), "session_ids": ["manual"]},
+        scheduler_refs={},
+    )
+
+
 def test_guarded_apply_records_drill_metadata_and_state(tmp_path):
     result = _apply_for_drill(tmp_path)
 
@@ -310,145 +326,65 @@ def test_run_restore_drill_records_failed_state_for_unreadable_manifest(tmp_path
     assert state["last_drill"]["status"] == "fail"
 
 
-def test_auto_run_warns_when_drill_missing_and_still_applies(tmp_path):
+def test_auto_run_warns_when_drill_missing_but_remains_proposal_only(tmp_path):
     db = tmp_path / "evidence.sqlite"
     store = EvidenceStore(db)
     skills = tmp_path / "skills"
     backups = tmp_path / "backups"
-    _write_skill(skills, "store-playbook")
-    store.record_tool_call(
-        tool_name="skill_view",
-        args={"name": "store-playbook"},
-        result={"success": True},
-        session_id="s1",
-    )
+    skill_file = _write_skill(skills, "store-playbook")
+    original = skill_file.read_bytes()
+    store.record_tool_call(tool_name="skill_view", args={"name": "store-playbook"}, result={"success": True}, session_id="s1")
+    manual = _seed_manual_apply(tmp_path, skills, backups, "store-playbook")
+    seeded = skill_file.read_bytes()
 
-    first = run_auto_evolve(
-        AutoEvolveConfig(
-            db_path=db,
-            skills_dir=skills,
-            backup_dir=backups,
-            days=30,
-            min_evidence=1,
-            apply_low_risk=True,
-            approve_auto_apply=True,
-        )
-    )
-    second = run_auto_evolve(
-        AutoEvolveConfig(
-            db_path=db,
-            skills_dir=skills,
-            backup_dir=backups,
-            days=30,
-            min_evidence=1,
-            apply_low_risk=True,
-            approve_auto_apply=True,
-        )
-    )
+    result = run_auto_evolve(AutoEvolveConfig(db_path=db, skills_dir=skills, backup_dir=backups, days=30, min_evidence=1, apply_low_risk=True, approve_auto_apply=True))
 
-    assert first["summary"]["applied"] == 1
-    # First pass had no prior apply, gate ends after this run reporting last_apply.
-    gate_after_first = first["safety"]["restore_drill_gate"]
-    assert gate_after_first["last_apply"]["skill_name"] == "store-playbook"
-    # Second pass should warn but still apply (require_restore_drill default False).
-    second_gate = second["safety"]["restore_drill_gate"]
-    assert second_gate["allowed"] is True
-    assert second_gate["reason"].endswith("-warning")
-    assert second["summary"]["applied"] == 1
+    candidate = result["candidates"][0]
+    assert candidate["status"] == "proposal-only"
+    assert candidate["apply_result"]["reason"] == "native-single-writer-handoff-required"
+    assert result["summary"]["applied"] == 0
+    assert result["safety"]["restore_drill_gate"]["allowed"] is True
+    assert result["safety"]["restore_drill_gate"]["reason"].endswith("-warning")
+    assert skill_file.read_bytes() == seeded
+    assert Path(manual["manifest_path"]).exists()
+    assert original != seeded
 
-
-def test_auto_run_blocks_subsequent_apply_when_drill_required(tmp_path):
+def test_auto_run_restore_drill_requirement_does_not_enable_autorun_writes(tmp_path):
     db = tmp_path / "evidence.sqlite"
     store = EvidenceStore(db)
     skills = tmp_path / "skills"
     backups = tmp_path / "backups"
-    skill_a = _write_skill(skills, "store-playbook")
-    skill_b = _write_skill(skills, "deploy-playbook")
-    original_a = skill_a.read_text(encoding="utf-8")
-    original_b = skill_b.read_text(encoding="utf-8")
-    for name in ("store-playbook", "deploy-playbook"):
-        store.record_tool_call(
-            tool_name="skill_view",
-            args={"name": name},
-            result={"success": True},
-            session_id=f"s-{name}",
-        )
+    skill_file = _write_skill(skills, "store-playbook")
+    store.record_tool_call(tool_name="skill_view", args={"name": "store-playbook"}, result={"success": True}, session_id="s1")
+    _seed_manual_apply(tmp_path, skills, backups, "store-playbook")
+    original = skill_file.read_bytes()
 
-    first = run_auto_evolve(
-        AutoEvolveConfig(
-            db_path=db,
-            skills_dir=skills,
-            backup_dir=backups,
-            days=30,
-            min_evidence=1,
-            max_skills=5,
-            apply_low_risk=True,
-            approve_auto_apply=True,
-            require_restore_drill=True,
-        )
-    )
+    result = run_auto_evolve(AutoEvolveConfig(db_path=db, skills_dir=skills, backup_dir=backups, days=30, min_evidence=1, apply_low_risk=True, approve_auto_apply=True, require_restore_drill=True))
 
-    # First skill applies (no prior apply yet, so the gate allows it).
-    # The act of applying the first skill makes the gate fail for the second.
-    statuses = {c["skill_name"]: c["status"] for c in first["candidates"]}
-    reasons = {c["skill_name"]: c.get("reason") for c in first["candidates"]}
-    assert "applied" in statuses.values()
-    skipped_for_drill = [name for name, status in statuses.items() if status == "skipped" and reasons[name] == "restore-drill-required"]
-    assert skipped_for_drill, "second skill in the same pass should be blocked by the drill gate"
-    blocked_name = skipped_for_drill[0]
-    blocked_path = {"deploy-playbook": skill_b, "store-playbook": skill_a}[blocked_name]
-    blocked_original = {"deploy-playbook": original_b, "store-playbook": original_a}[blocked_name]
-    assert blocked_path.read_text(encoding="utf-8") == blocked_original
-    # safety reflects the require flag and shows the post-apply gate failure.
-    assert first["safety"]["require_restore_drill"] is True
-    assert first["safety"]["restore_drill_gate"]["require"] is True
-
-
-def test_auto_run_blocks_first_apply_when_drill_missing_after_prior_apply(tmp_path):
-    db = tmp_path / "evidence.sqlite"
-    store = EvidenceStore(db)
-    skills = tmp_path / "skills"
-    backups = tmp_path / "backups"
-    _write_skill(skills, "store-playbook")
-    store.record_tool_call(
-        tool_name="skill_view",
-        args={"name": "store-playbook"},
-        result={"success": True},
-        session_id="s1",
-    )
-
-    # First pass: apply once without requiring drill.
-    run_auto_evolve(
-        AutoEvolveConfig(
-            db_path=db,
-            skills_dir=skills,
-            backup_dir=backups,
-            days=30,
-            min_evidence=1,
-            apply_low_risk=True,
-            approve_auto_apply=True,
-        )
-    )
-
-    # Second pass with require_restore_drill must block because no drill ran.
-    second = run_auto_evolve(
-        AutoEvolveConfig(
-            db_path=db,
-            skills_dir=skills,
-            backup_dir=backups,
-            days=30,
-            min_evidence=1,
-            apply_low_risk=True,
-            approve_auto_apply=True,
-            require_restore_drill=True,
-        )
-    )
-
-    candidate = second["candidates"][0]
+    candidate = result["candidates"][0]
     assert candidate["status"] == "skipped"
     assert candidate["reason"] == "restore-drill-required"
-    assert second["summary"]["applied"] == 0
+    assert result["summary"]["applied"] == 0
+    assert result["safety"]["require_restore_drill"] is True
+    assert skill_file.read_bytes() == original
 
+def test_auto_run_after_manual_apply_stays_proposal_only_without_handoff(tmp_path):
+    db = tmp_path / "evidence.sqlite"
+    store = EvidenceStore(db)
+    skills = tmp_path / "skills"
+    backups = tmp_path / "backups"
+    skill_file = _write_skill(skills, "store-playbook")
+    store.record_tool_call(tool_name="skill_view", args={"name": "store-playbook"}, result={"success": True}, session_id="s1")
+    _seed_manual_apply(tmp_path, skills, backups, "store-playbook")
+    original = skill_file.read_bytes()
+
+    result = run_auto_evolve(AutoEvolveConfig(db_path=db, skills_dir=skills, backup_dir=backups, days=30, min_evidence=1, apply_low_risk=True, approve_auto_apply=True, require_restore_drill=True))
+
+    candidate = result["candidates"][0]
+    assert candidate["status"] == "skipped"
+    assert candidate["reason"] == "restore-drill-required"
+    assert result["summary"]["applied"] == 0
+    assert skill_file.read_bytes() == original
 
 def test_cli_restore_drill_emits_json_and_handles_missing_manifest(tmp_path, capsys):
     apply_result = _apply_for_drill(tmp_path)
